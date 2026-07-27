@@ -24,12 +24,14 @@ Never hide a semantic compromise behind a configuration default.
 ## 3. Component model
 
 - Caddy owns HTTP/TLS lifecycle, routing integration, configuration loading, logging, and graceful reload behavior.
-- The gateway handler owns HTTP-to-NATS translation, policy enforcement, identity envelopes, limits, metrics, and error mapping.
+- The gateway handler owns HTTP-to-NATS translation, declared-route enforcement, credential presentation, connection isolation, limits, metrics, and error mapping.
 - NATS owns messaging, accounts, subject permissions, request/reply, and JetStream persistence.
 - Application services own domain logic and must not depend on Caddy internals.
-- Authentication adapters validate external credentials. Authorization decisions remain explicit gateway policy plus NATS permissions.
+- Credential adapters translate supported HTTP credential presentations into NATS client authentication options without validating identity or deciding access. NATS authenticates each client identity and NATS accounts and subject permissions are the authorization authority.
 
-Dependencies must point inward toward small interfaces. Core translation and policy packages must be testable without running Caddy or a networked NATS server.
+Dependencies must point inward toward small interfaces. Core translation,
+route-enforcement, and credential-adapter packages must be testable without
+running Caddy or a networked NATS server.
 
 ## 4. Configuration
 
@@ -58,13 +60,14 @@ Dependencies must point inward toward small interfaces. Core translation and pol
 
 ## 7. Identity and authorization
 
-- OIDC/OAuth authentication at the HTTP boundary and NATS Auth Callout are separate concerns.
-- The gateway must never trust identity claims copied by an untrusted HTTP or browser client into application headers or payloads.
-- Downstream identity context must use a versioned, integrity-protected envelope generated only after authentication and authorization.
-- The envelope must support issuer, subject, audience, tenant, issue/expiry time, request ID, and explicitly allowlisted claims.
-- Key rotation, clock skew, replay exposure, disclosure minimization, and downstream verification must be designed and tested.
-- NATS connection identities must have least-privilege publish/subscribe permissions. Gateway policy cannot be the only isolation boundary.
-- Authentication or policy failure must fail closed.
+- Authentication and authorization are delegated to NATS. The gateway is not an identity provider, OAuth/OIDC verifier, user registry, or independent authorization policy engine.
+- Each protected HTTP security context must use a corresponding NATS connection authenticated as that context; a shared gateway connection must not collapse distinct end-user authorization domains.
+- Credential adapters may present bearer tokens, user/password credentials, NKey/JWT material, TLS credentials, or other explicitly supported NATS client options. They transport or transform credential presentation only; successful NATS connection establishment is the authentication result.
+- NATS may authenticate and authorize through Auth Callout backed by OAuth or another IAM system, static configuration, decentralized JWTs, NKeys, TLS certificates, or any other deployment-selected NATS mechanism compatible with the adapter.
+- NATS accounts and publish/subscribe permissions are the authorization authority. Declared gateway routes and subject templates reduce exposed surface but must not grant access beyond the permissions of the authenticated NATS identity.
+- The gateway must never trust identity claims copied by an untrusted HTTP or browser client into application headers or payloads, and must not manufacture a claim that NATS has not authenticated and exposed through a trustworthy protocol.
+- Credential-to-NATS mappings must document their proof-of-possession and termination semantics. Methods that cannot be mapped safely from the HTTP request must be unavailable and fail closed.
+- Authentication, connection authorization, or permission failure must fail closed. Credential material must never be pooled across security contexts or serialized into logs, metrics, errors, or generated documentation.
 
 ## 8. Go engineering rules
 
@@ -81,7 +84,7 @@ Dependencies must point inward toward small interfaces. Core translation and pol
 
 Every behavioral change must include appropriate tests. The expected layers are:
 
-- unit tests for translation, validation, policy, identity, and error mapping
+- unit tests for translation, validation, routes, credential adapters, connection isolation, and error mapping
 - integration tests with real Caddy and NATS processes for protocol boundaries
 - race-enabled tests for concurrency-sensitive code
 - fuzz or property tests for parsers, templates, headers, and untrusted input
@@ -94,7 +97,7 @@ Pull requests must report commands run and coverage impact. Coverage is evidence
 - Use structured Caddy logging and OpenTelemetry-compatible concepts.
 - Propagate or create request and trace identifiers without accepting spoofable internal identifiers.
 - Metrics must avoid unbounded labels such as raw subjects, paths, tenants, or user IDs.
-- Logs must not contain tokens, cookies, credentials, full identity envelopes, or sensitive payloads.
+- Logs must not contain tokens, cookies, credentials, authenticated identity attributes, or sensitive payloads.
 - Health and readiness must distinguish process health from NATS connectivity and configuration validity.
 
 ## 11. Compatibility and releases

@@ -4,7 +4,7 @@ Tasks are executed in numeric order unless dependencies permit an explicitly app
 
 ## Foundation
 
-- [ ] **OSS-001 — Record the initial threat model and protocol decisions.** Document trust boundaries, assets, attacker capabilities, HTTP/NATS failure mappings, Core NATS versus JetStream guarantees, and the signed identity-envelope decision. Add architecture decision records for irreversible choices.
+- [x] **OSS-001 — Record the initial threat model and protocol decisions.** Document trust boundaries, assets, attacker capabilities, HTTP/NATS failure mappings, Core NATS versus JetStream guarantees, and the decision to delegate authentication and authorization to NATS. Add architecture decision records for irreversible choices. ([PR pending](https://github.com/davidoram/nats-web-gateway/pulls))
 - [ ] **OSS-002 — Scaffold the Go module and quality gates.** Establish package boundaries, Caddy module registration, formatting, linting, unit tests, race tests, coverage reporting, dependency scanning, SBOM generation, and reproducible local commands.
 - [ ] **OSS-003 — Build the local integration environment.** Provide pinned Caddy and NATS development configurations, container orchestration, test credentials, readiness checks, and a minimal ADR-32 example service.
 - [ ] **OSS-004 — Define and validate gateway configuration.** Implement JSON configuration, Caddyfile adaptation, route definitions, subject templates, header allowlists, timeouts, limits, and fail-closed validation.
@@ -18,9 +18,9 @@ Tasks are executed in numeric order unless dependencies permit an explicitly app
 
 ## Identity and policy
 
-- [ ] **OSS-009 — Add OIDC JWT validation.** Support issuer, audience, JWKS caching and rotation, expiry, clock skew, algorithm restrictions, safe failure modes, and test identity providers.
-- [ ] **OSS-010 — Implement route authorization policy.** Map authenticated claims to declared routes and subject templates, enforce least privilege, and produce auditable denial reasons without disclosing sensitive details.
-- [ ] **OSS-011 — Implement the trusted identity envelope.** Define a versioned signed format, key loading and rotation, downstream verification library, claim minimization, audience binding, request correlation, and replay analysis.
+- [ ] **OSS-009 — Implement HTTP-to-NATS credential adapters.** Present explicitly supported HTTP credentials as NATS client authentication options without validating identity in the gateway; cover Auth Callout bearer-token, user/password, NKey/JWT, and TLS mappings where their proof-of-possession semantics can be preserved; reject unsupported or ambiguous mappings.
+- [ ] **OSS-010 — Enforce per-security-context NATS authorization.** Create and isolate NATS connections by authenticated security context, preserve account and subject permissions, prevent credential or connection reuse across contexts, bound connection cardinality and lifetime, and map authentication and permission failures safely.
+- [ ] **OSS-011 — Define trustworthy downstream identity context.** Determine which authenticated identity attributes NATS exposes for each supported mechanism, forward only protocol-authenticated and integrity-protected context, prohibit caller-asserted identity, and document mechanisms for which end-user identity propagation is unavailable.
 
 ## HTTP streaming
 
