@@ -4,7 +4,7 @@ Tasks are executed in numeric order unless dependencies permit an explicitly app
 
 ## Foundation
 
-- [x] **OSS-001 — Record the initial threat model and protocol decisions.** Document trust boundaries, assets, attacker capabilities, HTTP/NATS failure mappings, Core NATS versus JetStream guarantees, and the decision to delegate authentication and authorization to NATS. Add architecture decision records for irreversible choices. ([PR pending](https://github.com/davidoram/nats-web-gateway/pulls))
+- [x] **OSS-001 — Record the initial threat model and protocol decisions.** Document trust boundaries, assets, attacker capabilities, HTTP/NATS failure mappings, Core NATS versus JetStream guarantees, and the decision to delegate authentication and authorization to NATS. Add architecture decision records for irreversible choices. ([PR #1](https://github.com/davidoram/nats-web-gateway/pull/1))
 - [ ] **OSS-002 — Scaffold the Go module and quality gates.** Establish package boundaries, Caddy module registration, formatting, linting, unit tests, race tests, coverage reporting, dependency scanning, SBOM generation, and reproducible local commands.
 - [ ] **OSS-003 — Build the local integration environment.** Provide pinned Caddy and NATS development configurations, container orchestration, test credentials, readiness checks, and a minimal ADR-32 example service.
 - [ ] **OSS-004 — Define and validate gateway configuration.** Implement JSON configuration, Caddyfile adaptation, route definitions, subject templates, header allowlists, timeouts, limits, and fail-closed validation.
