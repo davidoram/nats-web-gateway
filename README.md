@@ -7,11 +7,15 @@ The project will initially provide:
 - HTTP request/reply routes backed by NATS subjects
 - NATS Service API (ADR-32) compatible behavior
 - Server-Sent Events for bounded, policy-controlled subscriptions
-- OIDC authentication at the HTTP boundary
-- trusted, tamper-resistant end-user identity context for downstream services
+- authentication and authorization delegated to NATS, including Auth Callout-backed OAuth deployments
+- per-security-context NATS connections that preserve NATS account and subject permissions
 - production-oriented limits, observability, cancellation, and graceful shutdown
 
-The project is at the architecture and implementation-planning stage. See [ARCHITECTURE.md](ARCHITECTURE.md) for binding design rules and [TASKS.md](TASKS.md) for the ordered backlog.
+The project is at the architecture and implementation-planning stage. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for binding design rules,
+[THREAT_MODEL.md](THREAT_MODEL.md) for trust boundaries and protocol security
+decisions, [docs/adr](docs/adr) for accepted architecture decisions, and
+[TASKS.md](TASKS.md) for the ordered backlog.
 
 ## Development workflow
 
