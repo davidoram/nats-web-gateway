@@ -5,3 +5,7 @@
 Establish package boundaries, Caddy module registration, formatting, linting,
 unit tests, race tests, coverage reporting, dependency scanning, SBOM generation,
 and reproducible local commands.
+
+## Completion evidence
+
+- [PR #2](https://github.com/davidoram/nats-web-gateway/pull/2)
