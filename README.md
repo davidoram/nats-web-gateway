@@ -19,7 +19,18 @@ decisions, [docs/adr](docs/adr) for accepted architecture decisions, and the
 
 ## Development workflow
 
-Invoke the repository skill with `$deliver-next-task`. It presents eligible tasks, creates an isolated worktree, implements and verifies the selected task, opens a pull request, performs a senior Go review, and hands the PR to a human for final review and merge.
+Use the repository task lifecycle skills:
+
+- `$choose-task` recommends the next eligible task without changing the repository.
+- `$start-task OSS-NNN` creates or resumes an isolated task worktree and opens it
+  in a new VS Code window.
+- `$implement-task OSS-NNN` implements and verifies the task from that worktree,
+  performs a senior Go review, and opens a pull request.
+- `$close-task OSS-NNN` verifies the human-reviewed merge and safely removes the
+  worktree and merged branch.
+
+Repository agents never merge pull requests. A human reviews and merges each PR
+before `$close-task` performs cleanup.
 
 ## Licence
 

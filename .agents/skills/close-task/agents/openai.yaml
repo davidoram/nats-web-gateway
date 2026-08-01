@@ -1,0 +1,4 @@
+interface:
+  display_name: "Close Task"
+  short_description: "Close a merged task and clean its worktree"
+  default_prompt: "Use $close-task to close a merged task and clean up its worktree."

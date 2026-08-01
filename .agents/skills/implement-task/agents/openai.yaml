@@ -1,0 +1,4 @@
+interface:
+  display_name: "Implement Task"
+  short_description: "Implement, verify, and publish a task PR"
+  default_prompt: "Use $implement-task to implement and publish the selected task from this worktree."

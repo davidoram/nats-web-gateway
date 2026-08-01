@@ -13,6 +13,10 @@ approved exception. A task is complete only after its pull request is reviewed
 and merged. At that point, add the pull request link as completion evidence and
 move the task file from `todo/` to `done/`.
 
+The task branch may prepare that evidence and move in its implementation pull
+request. Until the pull request merges, the default branch remains the status
+source of truth and the task is still `todo`.
+
 Task filenames begin with their stable task ID so ordinary directory listings
 retain the intended order. Moving a file between status directories must not
 change its filename, identifier, description, dependencies, or existing

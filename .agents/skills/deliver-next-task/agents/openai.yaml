@@ -1,4 +1,0 @@
-interface:
-  display_name: "Deliver Next Task"
-  short_description: "Deliver a task through a reviewed GitHub PR"
-  default_prompt: "Use $deliver-next-task to choose and deliver the next repository task."

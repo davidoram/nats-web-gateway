@@ -1,0 +1,4 @@
+interface:
+  display_name: "Start Task"
+  short_description: "Create and open an isolated task worktree"
+  default_prompt: "Use $start-task to create a worktree for the selected repository task."

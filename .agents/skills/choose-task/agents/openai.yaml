@@ -1,0 +1,4 @@
+interface:
+  display_name: "Choose Task"
+  short_description: "Recommend the next eligible repository task"
+  default_prompt: "Use $choose-task to recommend the next eligible repository task."
