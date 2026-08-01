@@ -9,11 +9,15 @@ Treat a merged implementation PR as a hard precondition for cleanup.
 
 ## Resolve and verify
 
-1. Read `ARCHITECTURE.md` completely and treat it as binding.
+1. Read `ARCHITECTURE.md` completely and treat it as binding. Read
+   `docs/adr/0004-standard-build-and-verification-interface.md` and treat its
+   Mage targets as the canonical build and verification interface.
 2. Read `AGENTS.md`, `tasks/README.md`, every task file, and the selected task.
 3. Resolve the task's branch, registered worktree, and pull request. Verify the
    PR targets `main` and that its head matches the task branch.
-4. Inspect PR state and required checks.
+4. Inspect PR state and required checks. Confirm the PR records the exact Mage
+   targets run, as required by ADR 0004, and that required checks use the same
+   canonical interface.
 
 If the PR is open, do not merge it, enable auto-merge, move files, remove the
 worktree, or delete branches. Give the user the PR link and ask them to review

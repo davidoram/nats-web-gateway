@@ -11,7 +11,9 @@ Deliver one task completely from its already-created worktree.
 
 1. Read `ARCHITECTURE.md` completely and treat it as binding.
 2. Read `AGENTS.md`, `tasks/README.md`, every task file, the selected task, and
-   relevant ADRs and documentation.
+   relevant ADRs and documentation. Always read
+   `docs/adr/0004-standard-build-and-verification-interface.md`; treat its Mage
+   targets as the canonical interface for building and testing software.
 3. Confirm the current working directory is the selected task's registered
    worktree and the branch matches `task/<task-id>-<slug>`. Stop if running in
    the primary checkout, on `main`, or in a worktree for another task.
@@ -33,15 +35,21 @@ public behavior. Never weaken architecture, tests, or security to pass a check.
 
 ## Verify
 
-Run repository-provided commands first. Where applicable, run and record:
+Use `go tool mage <target>` as specified by
+`docs/adr/0004-standard-build-and-verification-interface.md`. Run and record
+`go tool mage verify` before opening or updating the pull request, plus the
+applicable task-specific targets from ADR 0004, including:
 
-- formatting and generated-file consistency checks;
-- configured linters and `go vet ./...`;
-- `go test ./...` and `go test -race ./...`;
-- coverage collection with package/function inspection;
-- integration tests for changed Caddy/NATS boundaries; and
-- fuzz, load, security, compatibility, dependency, or SBOM checks required by
-  the task and architecture.
+- `go tool mage build` for build changes;
+- `go tool mage integration` for changed Caddy/NATS boundaries;
+- `go tool mage security` for security or dependency-sensitive changes;
+- `go tool mage sbom` when the task affects build or release artifacts; and
+- `go tool mage ci` when complete merge-gate evidence is required.
+
+Use underlying Go or tool commands only for diagnosis. Do not substitute an
+ad hoc command sequence for the canonical Mage targets. Run additional fuzz,
+load, compatibility, or release targets when required by the task,
+architecture, or the evolving target contract in ADR 0004.
 
 Investigate every failure. Explicitly identify checks that are inapplicable or
 blocked rather than claiming they passed.

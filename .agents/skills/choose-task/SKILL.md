@@ -10,7 +10,9 @@ GitHub. Fetching remote references for current information is allowed.
 
 ## Gather
 
-1. Read `ARCHITECTURE.md` completely and treat it as binding.
+1. Read `ARCHITECTURE.md` completely and treat it as binding. Read
+   `docs/adr/0004-standard-build-and-verification-interface.md` and use its Mage
+   targets when describing likely build and verification work.
 2. Read `AGENTS.md`, `tasks/README.md`, and every file under `tasks/`.
 3. Inspect `git status --short --branch`, `git worktree list`, local and remote
    task branches, and open pull requests.
