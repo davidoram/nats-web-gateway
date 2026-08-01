@@ -1,6 +1,6 @@
 ---
 name: deliver-next-task
-description: Deliver one ordered repository task through selection, isolated Git worktree implementation, comprehensive verification, senior Go review, and a GitHub pull request. Use when the user asks to choose, start, implement, review, or ship the next task from TASKS.md in this repository.
+description: Deliver one ordered repository task through selection, isolated Git worktree implementation, comprehensive verification, senior Go review, and a GitHub pull request. Use when the user asks to choose, start, implement, review, or ship the next task from the tasks directory in this repository.
 ---
 
 # Deliver the next task
@@ -8,7 +8,7 @@ description: Deliver one ordered repository task through selection, isolated Git
 ## Mandatory inputs
 
 1. Read `ARCHITECTURE.md` completely and treat it as binding.
-2. Read `AGENTS.md`, `TASKS.md`, the current branch, worktree list, and repository status.
+2. Read `AGENTS.md`, `tasks/README.md`, every task file under `tasks/`, the current branch, worktree list, and repository status.
 3. Stop if architecture is absent, contradictory, or cannot support the requested task without amendment.
 
 ## Select
@@ -32,7 +32,7 @@ description: Deliver one ordered repository task through selection, isolated Git
 1. Make the smallest coherent change that fully satisfies the task.
 2. Include required code, tests, scripts, documentation, examples, migrations, and operational guidance.
 3. Preserve cancellation, bounded resource use, error causes, least privilege, and safe logging.
-4. Update `TASKS.md` in the same PR: mark only the selected task complete and include the PR URL once known.
+4. Update the selected task in the same PR: add the PR URL as completion evidence and move only that file from `tasks/todo/` to `tasks/done/` once the PR is merged.
 5. Do not make unrelated cleanup changes.
 
 ## Verify
@@ -74,4 +74,4 @@ Fix all actionable findings, rerun affected verification, and repeat review unti
 
 ## Handoff
 
-Give the user the PR link and a concise manual-review checklist. Explicitly ask them to inspect and merge the PR. After they confirm merge, verify the merged state before offering to remove the worktree and branch.
+Give the user the PR link and a concise manual-review checklist. Explicitly ask them to inspect and merge the PR. After they confirm merge, verify the merged state, move the task file from `tasks/todo/` to `tasks/done/` with its completion evidence, and offer to remove the worktree and branch.

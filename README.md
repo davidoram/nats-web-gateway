@@ -14,8 +14,8 @@ The project will initially provide:
 The project is at the architecture and implementation-planning stage. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for binding design rules,
 [THREAT_MODEL.md](THREAT_MODEL.md) for trust boundaries and protocol security
-decisions, [docs/adr](docs/adr) for accepted architecture decisions, and
-[TASKS.md](TASKS.md) for the ordered backlog.
+decisions, [docs/adr](docs/adr) for accepted architecture decisions, and the
+[tasks directory](tasks/README.md) for the ordered backlog.
 
 ## Development workflow
 

@@ -1,7 +1,7 @@
 # Repository instructions for Codex
 
 1. Read `ARCHITECTURE.md` completely before planning or changing anything. It is binding.
-2. Read `TASKS.md` and preserve task identifiers, ordering, dependencies, and completion evidence.
+2. Read `tasks/README.md` and every task file under `tasks/`; preserve task identifiers, ordering, dependencies, status, and completion evidence.
 3. Use `$deliver-next-task` when asked to select, implement, review, or deliver a backlog task.
 4. Work in a dedicated Git worktree and task branch. Never implement directly on `main`.
 5. Open the Git worktree / task branch in a new instance of VSCode so the user can see the changes you are making.
