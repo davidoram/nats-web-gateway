@@ -4,10 +4,12 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -60,11 +62,76 @@ func Coverage() error {
 	return run("go", "tool", "cover", "-html=coverage/coverage.out", "-o", "coverage/coverage.html")
 }
 
-// Integration runs protocol-boundary tests. OSS-003 will add the pinned local
-// Caddy and NATS environment; the integration build tag keeps the entry point
-// stable until those tests exist.
-func Integration() error {
-	return run("go", "test", "-tags=integration", "./...")
+// Integration runs protocol-boundary tests against the pinned local Caddy and
+// NATS environment.
+func Integration() (resultErr error) {
+	if err := buildIntegrationBinaries(); err != nil {
+		return err
+	}
+	compose, err := composeCommand()
+	if err != nil {
+		return err
+	}
+	if err := run(compose[0], append(compose[1:], "up", "--detach")...); err != nil {
+		logIntegrationServices(compose)
+		_ = run(compose[0], append(compose[1:], "down", "--volumes", "--remove-orphans")...)
+		return fmt.Errorf("start local integration environment: %w", err)
+	}
+	defer func() {
+		if err := run(compose[0], append(compose[1:], "down", "--volumes", "--remove-orphans")...); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("stop local integration environment: %w", err))
+		}
+	}()
+	if err := run("go", "test", "-count=1", "-tags=integration", "./..."); err != nil {
+		logIntegrationServices(compose)
+		return err
+	}
+	return nil
+}
+
+func logIntegrationServices(compose []string) {
+	for _, service := range []string{"nats", "adr32-example", "caddy"} {
+		_ = run(compose[0], append(compose[1:], "logs", service)...)
+	}
+}
+
+func buildIntegrationBinaries() error {
+	if err := os.MkdirAll(filepath.FromSlash("build/integration"), 0o755); err != nil {
+		return fmt.Errorf("create integration build directory: %w", err)
+	}
+	env, err := commandEnvironment()
+	if err != nil {
+		return err
+	}
+	hostXcaddy := filepath.FromSlash("build/integration/xcaddy-host")
+	if runtime.GOOS == "windows" {
+		hostXcaddy += ".exe"
+	}
+	if err := sh.RunWithV(env, "go", "build", "-o", hostXcaddy, "github.com/caddyserver/xcaddy/cmd/xcaddy"); err != nil {
+		return fmt.Errorf("build host xcaddy tool: %w", err)
+	}
+	env["CGO_ENABLED"] = "0"
+	env["GOOS"] = "linux"
+	env["GOARCH"] = runtime.GOARCH
+	env["GOFLAGS"] = "-trimpath -buildvcs=false"
+	if err := sh.RunWithV(env, hostXcaddy, "build", caddyVersion,
+		"--output", filepath.FromSlash("build/integration/caddy"), "--with", modulePath+"=."); err != nil {
+		return fmt.Errorf("build Linux integration Caddy binary: %w", err)
+	}
+	if err := sh.RunWithV(env, "go", "build", "-o", filepath.FromSlash("build/integration/adr32-example"), "./cmd/adr32-example"); err != nil {
+		return fmt.Errorf("build Linux ADR-32 example service: %w", err)
+	}
+	return nil
+}
+
+func composeCommand() ([]string, error) {
+	if _, err := exec.LookPath("docker"); err == nil {
+		return []string{"docker", "compose", "--file", "compose.yml"}, nil
+	}
+	if _, err := exec.LookPath("podman-compose"); err == nil {
+		return []string{"podman-compose", "--file", "compose.yml"}, nil
+	}
+	return nil, errors.New("integration requires docker compose or podman-compose")
 }
 
 // Lint checks formatting, module metadata, go vet, and static analysis.

@@ -1,0 +1,23 @@
+{
+  "admin": {
+    "disabled": true
+  },
+  "apps": {
+    "http": {
+      "servers": {
+        "local": {
+          "listen": [":8080"],
+          "routes": [
+            {
+              "match": [{"path": ["/health"]}],
+              "handle": [
+                {"handler": "nats_web_gateway"},
+                {"handler": "static_response", "body": "ready\n"}
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}
