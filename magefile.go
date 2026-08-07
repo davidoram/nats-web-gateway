@@ -64,7 +64,7 @@ func Coverage() error {
 
 // Integration runs protocol-boundary tests against the pinned local Caddy and
 // NATS environment.
-func Integration() error {
+func Integration() (resultErr error) {
 	if err := buildIntegrationBinaries(); err != nil {
 		return err
 	}
@@ -79,7 +79,7 @@ func Integration() error {
 	}
 	defer func() {
 		if err := run(compose[0], append(compose[1:], "down", "--volumes", "--remove-orphans")...); err != nil {
-			fmt.Fprintf(os.Stderr, "stop local integration environment: %v\n", err)
+			resultErr = errors.Join(resultErr, fmt.Errorf("stop local integration environment: %w", err))
 		}
 	}()
 	if err := run("go", "test", "-count=1", "-tags=integration", "./..."); err != nil {
