@@ -6,10 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,13 +30,13 @@ func TestLocalEnvironment(t *testing.T) {
 	waitForService(t, nc, 30*time.Second)
 
 	t.Run("Caddy loads the gateway module", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, envOrDefault("CADDY_URL", defaultCaddyURL)+"/health", nil)
+		req, err := http.NewRequest(http.MethodGet, envOrDefault("CADDY_URL", defaultCaddyURL)+"/health", nil)
 		if err != nil {
 			t.Fatalf("create Caddy health request: %v", err)
 		}
-		response, err := doWithRetry(req, 30*time.Second)
+		response, err := doWithRetry(ctx, http.DefaultClient, req, 2*time.Second)
 		if err != nil {
 			t.Fatalf("request Caddy health endpoint: %v", err)
 		}
@@ -134,18 +136,100 @@ func waitForService(t *testing.T, nc *nats.Conn, timeout time.Duration) {
 	t.Fatalf("wait for ADR-32 service readiness: %v", lastErr)
 }
 
-func doWithRetry(request *http.Request, timeout time.Duration) (*http.Response, error) {
-	deadline := time.Now().Add(timeout)
+func doWithRetry(ctx context.Context, client *http.Client, request *http.Request, attemptTimeout time.Duration) (*http.Response, error) {
 	var lastErr error
-	for time.Now().Before(deadline) {
-		response, err := http.DefaultClient.Do(request.Clone(request.Context()))
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, errors.Join(err, lastErr)
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
+		response, err := client.Do(request.Clone(attemptCtx))
+		cancel()
 		if err == nil {
 			return response, nil
 		}
+		if response != nil {
+			response.Body.Close()
+		}
 		lastErr = err
-		time.Sleep(250 * time.Millisecond)
+		timer := time.NewTimer(250 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return nil, errors.Join(ctx.Err(), lastErr)
+		case <-timer.C:
+		}
 	}
-	return nil, lastErr
+}
+
+func TestDoWithRetryUsesFreshAttemptContexts(t *testing.T) {
+	t.Parallel()
+
+	var attempts atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Context().Err() != nil {
+			return nil, request.Context().Err()
+		}
+		if attempts.Add(1) < 3 {
+			return nil, errors.New("not ready")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("ready\n")),
+			Header:     make(http.Header),
+			Request:    request,
+		}, nil
+	})}
+	request, err := http.NewRequest(http.MethodGet, "http://example.test/health", nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	response, err := doWithRetry(ctx, client, request, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("retry request: %v", err)
+	}
+	response.Body.Close()
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("attempts = %d, want 3", got)
+	}
+}
+
+func TestDoWithRetryHonorsOverallDeadline(t *testing.T) {
+	t.Parallel()
+
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})}
+	request, err := http.NewRequest(http.MethodGet, "http://example.test/health", nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err = doWithRetry(ctx, client, request, time.Second)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("retry error = %v, want deadline exceeded", err)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (roundTrip roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := roundTrip(request)
+	if err != nil {
+		return nil, fmt.Errorf("round trip: %w", err)
+	}
+	return response, nil
 }
 
 func connectWithRetry(t *testing.T, timeout time.Duration) *nats.Conn {
