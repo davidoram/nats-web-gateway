@@ -1,0 +1,51 @@
+name: nats-web-gateway-local
+
+services:
+  nats:
+    image: docker.io/library/nats:2.12.4-alpine@sha256:31c6ed3b2da61645aaa3ad9217b5a52b34b6ebd555ecb71259cd7723c59ae1ea
+    command: ["-c", "/etc/nats/nats-server.conf"]
+    ports:
+      - "127.0.0.1:14222:4222"
+      - "127.0.0.1:18222:8222"
+    volumes:
+      - "./integration/local/nats-server.conf:/etc/nats/nats-server.conf:ro"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:8222/healthz"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+
+  adr32-example:
+    image: docker.io/library/alpine:3.22.2@sha256:24bb3511a0db7b5114a4aee033c65a8a4148f39b7b80a398e548546db967a36f
+    command: ["/usr/local/bin/adr32-example"]
+    environment:
+      NATS_URL: nats://nats:4222
+      NATS_USER: adr32_service
+      NATS_PASSWORD: local-service-only
+    volumes:
+      - "./build/integration/adr32-example:/usr/local/bin/adr32-example:ro"
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/ready"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+
+  caddy:
+    image: docker.io/library/caddy:2.11.4-alpine@sha256:1172d4213087d3fc30bafc7ff2c2896180eb0c41ff7f75f315568fb36cabdcba
+    command: ["/usr/local/bin/caddy-local", "run", "--config", "/etc/caddy/caddy.json"]
+    ports:
+      - "127.0.0.1:18080:8080"
+    volumes:
+      - "./build/integration/caddy:/usr/local/bin/caddy-local:ro"
+      - "./integration/local/caddy.json:/etc/caddy/caddy.json:ro"
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:8080/health"]
+      interval: 1s
+      timeout: 1s
+      retries: 30

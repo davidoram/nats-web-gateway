@@ -51,10 +51,41 @@ go tool mage ci          # authoritative merge gate
 go tool mage clean       # remove only build/, coverage/, and dist/
 ```
 
-The first invocation may download pinned Go modules and tools. Tests themselves
-do not use public network services. OSS-003 will add the pinned local Caddy and
-NATS processes used by the integration target; until then it runs all tests with
-the reserved `integration` build tag.
+The first invocation may download pinned Go modules, tools, and container images.
+Tests themselves do not use public network services. `go tool mage integration`
+builds Linux binaries for the host architecture, starts the pinned local Caddy,
+NATS, and ADR-32 example-service containers from `compose.yml`, waits for the
+real protocol boundaries, runs the integration-tagged tests, and removes the
+environment. Docker Compose or Podman Compose is required.
+
+### Local integration environment
+
+The environment binds only to loopback:
+
+| Component | Address | Purpose |
+| --- | --- | --- |
+| Caddy | `http://127.0.0.1:18080/health` | Loads the local gateway module and exercises its handler chain. |
+| NATS client | `nats://127.0.0.1:14222` | Pinned NATS server used for request/reply tests. |
+| NATS monitoring | `http://127.0.0.1:18222/healthz` | NATS readiness endpoint. |
+| ADR-32 example | `demo.echo` | Echoes payloads and returns ADR-32 error code `4001` for payload `error`. |
+
+For interactive development, first build the integration binaries with
+`go tool mage integration` or `go tool mage ci`, then use the same checked-in
+orchestration directly:
+
+```text
+podman-compose --file compose.yml up --detach
+podman-compose --file compose.yml down --volumes --remove-orphans
+```
+
+Docker users can replace `podman-compose` with `docker compose`.
+
+The credentials in `integration/local/nats-server.conf` are deliberately weak,
+checked-in fixtures. They are restricted to the example subjects, must never be
+reused outside this loopback-only environment, and must not be treated as a
+deployment configuration. The gateway fixture can publish `demo.echo` and
+ADR-32 discovery requests and can subscribe only to its NATS inbox. The example
+service can consume those requests and publish only their replies.
 
 The root package is the thin Caddy module boundary. Transport-independent route
 enforcement, credential presentation, and HTTP/NATS translation live under
