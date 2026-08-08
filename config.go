@@ -363,7 +363,7 @@ func validateHeaderList(field string, headers []string) error {
 
 func forbiddenHeader(header string) bool {
 	switch header {
-	case "Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie", "Connection", "Content-Length", "Host", "Keep-Alive", "Proxy-Authenticate", "Proxy-Connection", "Te", "Trailer", "Transfer-Encoding", "Upgrade":
+	case "Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie", "Connection", "Content-Length", "Host", "Keep-Alive", "Proxy-Authenticate", "Proxy-Connection", "Te", "Trailer", "Transfer-Encoding", "Upgrade", "X-Authenticated", "X-Tenant", "X-User":
 		return true
 	}
 	lower := strings.ToLower(header)
