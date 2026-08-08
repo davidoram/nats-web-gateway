@@ -28,12 +28,7 @@ secret source; never embed production credentials in checked-in configuration.
 
 ## Request/reply example
 
-The [Go orders service](examples/orders-service/main.go) demonstrates a small
-API behind declared request/reply routes: a path value and a query value build
-a validated subject, JSON request bodies are bounded, selected HTTP headers are
-forwarded to NATS, and selected reply headers and bounded payloads return to the
-HTTP caller. The matching Caddyfile and JSON configurations, plus curl examples,
-are in [the configuration guide](docs/configuration.md#requestreply-example).
+The [Go orders service](examples/orders-service/main.go) demonstrates a small API behind declared request/reply routes: a path value and a query value build a validated subject, JSON request bodies are bounded, selected HTTP headers are forwarded to NATS, and selected reply headers and bounded payloads return to the HTTP caller. The matching Caddyfile and JSON configurations, plus curl examples, are in [the configuration guide](docs/configuration.md#requestreply-example).
 
 ## Development workflow
 
@@ -52,8 +47,7 @@ before `$close-task` performs cleanup.
 
 ## Build and verification
 
-Go 1.26.5 or newer is required. Development tools are pinned in `go.mod` and run
-without global installation through the canonical Mage interface:
+Go 1.26.5 or newer is required. Development tools are pinned in `go.mod` and run without global installation through the canonical Mage interface:
 
 ```text
 go tool mage build       # build/custom Caddy binary
@@ -69,12 +63,7 @@ go tool mage ci          # authoritative merge gate
 go tool mage clean       # remove only build/, coverage/, and dist/
 ```
 
-The first invocation may download pinned Go modules, tools, and container images.
-Tests themselves do not use public network services. `go tool mage integration`
-builds Linux binaries for the host architecture, starts the pinned local Caddy,
-NATS, and ADR-32 example-service containers from `compose.yml`, waits for the
-real protocol boundaries, runs the integration-tagged tests, and removes the
-environment. Docker Compose or Podman Compose is required.
+The first invocation may download pinned Go modules, tools, and container images. Tests themselves do not use public network services. `go tool mage integration` builds Linux binaries for the host architecture, starts the pinned local Caddy, NATS, and ADR-32 example-service containers from `compose.yml`, waits for the real protocol boundaries, runs the integration-tagged tests, and removes the environment. Docker Compose or Podman Compose is required.
 
 ### Local integration environment
 
@@ -88,26 +77,13 @@ The environment binds only to loopback:
 | ADR-32 example | `demo.echo` | Echoes payloads and returns ADR-32 error code `4001` for payload `error`. |
 
 For interactive development, first build the integration binaries with
-`go tool mage integration` or `go tool mage ci`, then use the same checked-in
-orchestration directly:
+`go tool mage integration` or `go tool mage ci`, then use the same checked-in orchestration directly:
 
-```text
-podman-compose --file compose.yml up --detach
-podman-compose --file compose.yml down --volumes --remove-orphans
-```
 
-Docker users can replace `podman-compose` with `docker compose`.
+The credentials in `integration/local/nats-server.conf` are deliberately weak, checked-in fixtures. They are restricted to the example subjects, must never be reused outside this loopback-only environment, and must not be treated as a deployment configuration. The gateway fixture can publish `demo.echo` and ADR-32 discovery requests and can subscribe only to its NATS inbox. The example service can consume those requests and publish only their replies.
 
-The credentials in `integration/local/nats-server.conf` are deliberately weak,
-checked-in fixtures. They are restricted to the example subjects, must never be
-reused outside this loopback-only environment, and must not be treated as a
-deployment configuration. The gateway fixture can publish `demo.echo` and
-ADR-32 discovery requests and can subscribe only to its NATS inbox. The example
-service can consume those requests and publish only their replies.
 
-The root package is the thin Caddy module boundary. Transport-independent route
-enforcement, credential presentation, and HTTP/NATS translation live under
-`internal/routes`, `internal/credentials`, and `internal/translation`
+The root package is the thin Caddy module boundary. Transport-independent route enforcement, credential presentation, and HTTP/NATS translation live under `internal/routes`, `internal/credentials`, and `internal/translation`
 respectively so they remain testable without Caddy or network processes.
 
 ## Licence

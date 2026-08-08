@@ -181,10 +181,24 @@ nats_web_gateway {
 }
 ```
 
-Run the service with `go run ./examples/orders-service`, then exercise both
-behaviors through Caddy:
+Build the components by running:
 
-```text
+```bash
+ go tool mage integration
+```
+
+Run the system as follows:
+
+```bash
+podman-compose --file compose.yml up --detach
+podman-compose --file compose.yml down --volumes --remove-orphans
+```
+
+Docker users can replace `podman-compose` with `docker compose`.
+
+Then to call the NATS service via HTTP can run:
+
+```bash
 curl 'http://localhost:8080/api/orders/order-42?view=confirmed'
 curl -X POST -H 'Content-Type: application/json' \
   --data '{"id":"order-43","status":"pending"}' \
