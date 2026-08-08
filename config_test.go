@@ -137,6 +137,27 @@ func TestHandlerValidateAcceptsQuerySubjectParameter(t *testing.T) {
 	}
 }
 
+func TestHandlerValidateAllowsRootAndSingleSegmentParameterRoutes(t *testing.T) {
+	t.Parallel()
+
+	root := validRoute("root", "/", "root", "GET")
+	parameterized := validRoute("named", "/{id}", "named.{id}", "GET")
+	if err := (Handler{Routes: []Route{root, parameterized}}).Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestHandlerValidateRejectsDuplicateRootRoutes(t *testing.T) {
+	t.Parallel()
+
+	left := validRoute("root_one", "/", "root.one", "GET")
+	right := validRoute("root_two", "/", "root.two", "GET")
+	err := (Handler{Routes: []Route{left, right}}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "overlapping paths and methods") {
+		t.Fatalf("Validate() error = %v, want overlapping route error", err)
+	}
+}
+
 func TestJSONConfiguration(t *testing.T) {
 	t.Parallel()
 

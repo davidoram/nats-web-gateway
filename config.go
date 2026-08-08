@@ -390,8 +390,8 @@ func methodsOverlap(left, right []string) bool {
 }
 
 func pathsOverlap(left, right string) bool {
-	leftSegments := strings.Split(strings.TrimPrefix(left, "/"), "/")
-	rightSegments := strings.Split(strings.TrimPrefix(right, "/"), "/")
+	leftSegments := pathSegments(left)
+	rightSegments := pathSegments(right)
 	if len(leftSegments) != len(rightSegments) {
 		return false
 	}
@@ -403,6 +403,13 @@ func pathsOverlap(left, right string) bool {
 		}
 	}
 	return true
+}
+
+func pathSegments(path string) []string {
+	if path == "/" {
+		return nil
+	}
+	return strings.Split(strings.TrimPrefix(path, "/"), "/")
 }
 
 // UnmarshalCaddyfile adapts nats_web_gateway route blocks into JSON-equivalent configuration.
