@@ -6,6 +6,7 @@ import (
 	"mime"
 	"net/http"
 	"regexp"
+	"regexp/syntax"
 	"slices"
 	"strconv"
 	"strings"
@@ -223,17 +224,11 @@ func validateParameters(parameters map[string]Parameter, pathParams, used []stri
 			return fmt.Errorf("path placeholder %q must use a path source", name)
 		}
 		expression := parameter.Pattern
-		compiled, err := regexp.Compile(expression)
-		if err != nil {
-			return fmt.Errorf("parameter %q validation expression: %w", name, err)
-		}
 		if expression == "" || !strings.HasPrefix(expression, "^") || !strings.HasSuffix(expression, "$") {
 			return fmt.Errorf("parameter %q validation expression must be explicitly anchored", name)
 		}
-		for _, unsafe := range []string{".", "..", "a.", ".a", "*", ">", "/", "a/b", " ", "\t", "\r", "\n"} {
-			if compiled.MatchString(unsafe) {
-				return fmt.Errorf("parameter %q validation expression permits unsafe value %q", name, unsafe)
-			}
+		if err := validateSafeParameterPattern(expression); err != nil {
+			return fmt.Errorf("parameter %q validation expression: %w", name, err)
 		}
 	}
 	for name := range parameters {
@@ -242,6 +237,93 @@ func validateParameters(parameters map[string]Parameter, pathParams, used []stri
 		}
 	}
 	return nil
+}
+
+func validateSafeParameterPattern(expression string) error {
+	parsed, err := syntax.Parse(expression, syntax.Perl)
+	if err != nil {
+		return err
+	}
+	minimum, err := safePatternMinimumLength(parsed)
+	if err != nil {
+		return err
+	}
+	if minimum == 0 {
+		return errors.New("must not match an empty value")
+	}
+	return nil
+}
+
+func safePatternMinimumLength(expression *syntax.Regexp) (int, error) {
+	switch expression.Op {
+	case syntax.OpNoMatch:
+		return 0, errors.New("must match at least one value")
+	case syntax.OpEmptyMatch, syntax.OpBeginLine, syntax.OpEndLine, syntax.OpBeginText, syntax.OpEndText, syntax.OpWordBoundary, syntax.OpNoWordBoundary:
+		return 0, nil
+	case syntax.OpLiteral:
+		if expression.Flags&syntax.FoldCase != 0 {
+			return 0, errors.New("case-folded literals are not supported")
+		}
+		for _, value := range expression.Rune {
+			if !safeParameterRune(value) {
+				return 0, fmt.Errorf("permits unsafe character %q", value)
+			}
+		}
+		return len(expression.Rune), nil
+	case syntax.OpCharClass:
+		for index := 0; index < len(expression.Rune); index += 2 {
+			for value := expression.Rune[index]; value <= expression.Rune[index+1]; value++ {
+				if !safeParameterRune(value) {
+					return 0, fmt.Errorf("permits unsafe character %q", value)
+				}
+			}
+		}
+		return 1, nil
+	case syntax.OpCapture:
+		return safePatternMinimumLength(expression.Sub[0])
+	case syntax.OpConcat:
+		minimum := 0
+		for _, child := range expression.Sub {
+			childMinimum, err := safePatternMinimumLength(child)
+			if err != nil {
+				return 0, err
+			}
+			minimum += childMinimum
+		}
+		return minimum, nil
+	case syntax.OpAlternate:
+		minimum := -1
+		for _, child := range expression.Sub {
+			childMinimum, err := safePatternMinimumLength(child)
+			if err != nil {
+				return 0, err
+			}
+			if minimum == -1 || childMinimum < minimum {
+				minimum = childMinimum
+			}
+		}
+		return minimum, nil
+	case syntax.OpQuest, syntax.OpStar:
+		if _, err := safePatternMinimumLength(expression.Sub[0]); err != nil {
+			return 0, err
+		}
+		return 0, nil
+	case syntax.OpPlus:
+		return safePatternMinimumLength(expression.Sub[0])
+	case syntax.OpRepeat:
+		minimum, err := safePatternMinimumLength(expression.Sub[0])
+		if err != nil {
+			return 0, err
+		}
+		return expression.Min * minimum, nil
+	default:
+		return 0, fmt.Errorf("uses unsupported regexp operation %s", expression.Op)
+	}
+}
+
+func safeParameterRune(value rune) bool {
+	return value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z' ||
+		value >= '0' && value <= '9' || value == '_' || value == '-'
 }
 
 func validateMethods(methods []string) error {

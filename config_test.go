@@ -62,7 +62,17 @@ func TestHandlerValidateRejectsUnsafeConfiguration(t *testing.T) {
 			p := h.Routes[0].Parameters["id"]
 			p.Pattern = `^.+$`
 			h.Routes[0].Parameters["id"] = p
-		}, want: "permits unsafe value"},
+		}, want: "unsupported regexp operation"},
+		{name: "long wildcard bypass", change: func(h *Handler) {
+			p := h.Routes[0].Parameters["id"]
+			p.Pattern = `^[A-Za-z.*>]{5,}$`
+			h.Routes[0].Parameters["id"] = p
+		}, want: "unsafe character"},
+		{name: "empty parameter grammar", change: func(h *Handler) {
+			p := h.Routes[0].Parameters["id"]
+			p.Pattern = `^$`
+			h.Routes[0].Parameters["id"] = p
+		}, want: "must not match an empty value"},
 		{name: "unused parameter grammar", change: func(h *Handler) {
 			h.Routes[0].Parameters["other"] = Parameter{Source: "query", Name: "other", Pattern: `^[a-z]+$`}
 		}, want: "not used"},
