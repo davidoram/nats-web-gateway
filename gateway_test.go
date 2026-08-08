@@ -13,6 +13,7 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	natstest "github.com/nats-io/nats-server/v2/test"
 	"github.com/nats-io/nats.go"
 )
 
@@ -272,29 +273,37 @@ func TestHandlerPassesRequestToNextHandler(t *testing.T) {
 }
 
 func TestHandlerExecutesMatchingRequestReplyRoute(t *testing.T) {
+	server := natstest.RunRandClientPortServer()
+	t.Cleanup(server.Shutdown)
+
+	service, err := nats.Connect(server.ClientURL())
+	if err != nil {
+		t.Fatalf("connect test service to NATS: %v", err)
+	}
+	t.Cleanup(service.Close)
+	received := make(chan *nats.Msg, 1)
+	_, err = service.Subscribe("orders.*.*", func(message *nats.Msg) {
+		received <- message
+		reply := nats.NewMsg(message.Reply)
+		reply.Data = []byte("response")
+		reply.Header.Set("X-Result", "created")
+		reply.Header.Set("Set-Cookie", "unsafe")
+		if publishErr := service.PublishMsg(reply); publishErr != nil {
+			t.Errorf("publish test service reply: %v", publishErr)
+		}
+	})
+	if err != nil {
+		t.Fatalf("subscribe test service: %v", err)
+	}
+	if err := service.Flush(); err != nil {
+		t.Fatalf("flush test service subscription: %v", err)
+	}
+
 	handler := validHandler(validRoute("get_order", "/orders/{id}", "orders.{id}.{view}", "POST"))
+	handler.NATS.URLs = []string{server.ClientURL()}
 	handler.Routes[0].Parameters["view"] = Parameter{Source: "query", Name: "view", Pattern: `^[A-Za-z0-9_-]+$`}
 	handler.Routes[0].RequestHeaders = []string{"Content-Type"}
 	handler.Routes[0].Response.Headers = []string{"X-Result"}
-	fake := &fakeNATSConnection{connected: true}
-	fake.request = func(ctx context.Context, message *nats.Msg) (*nats.Msg, error) {
-		if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 2*time.Second {
-			t.Fatal("request context did not carry route deadline")
-		}
-		if message.Subject != "orders.order-42.summary" || string(message.Data) != "request" || message.Header.Get("Content-Type") != "application/json" {
-			t.Fatalf("NATS message = subject %q data %q headers %v", message.Subject, message.Data, message.Header)
-		}
-		return &nats.Msg{Data: []byte("response"), Header: nats.Header{"X-Result": {"created"}, "Set-Cookie": {"unsafe"}}}, nil
-	}
-	handler.connect = func(_ string, options ...nats.Option) (natsConnection, error) {
-		fake.options = nats.GetDefaultOptions()
-		for _, option := range options {
-			if err := option(&fake.options); err != nil {
-				return nil, err
-			}
-		}
-		return fake, nil
-	}
 	if err := handler.Provision(caddy.Context{}); err != nil {
 		t.Fatal(err)
 	}
@@ -305,12 +314,23 @@ func TestHandlerExecutesMatchingRequestReplyRoute(t *testing.T) {
 	request.Header.Set("Authorization", "secret")
 	recorder := httptest.NewRecorder()
 	nextCalled := false
-	err := handler.ServeHTTP(recorder, request, caddyhttp.HandlerFunc(func(http.ResponseWriter, *http.Request) error { nextCalled = true; return nil }))
+	err = handler.ServeHTTP(recorder, request, caddyhttp.HandlerFunc(func(http.ResponseWriter, *http.Request) error { nextCalled = true; return nil }))
 	if err != nil || nextCalled || recorder.Code != http.StatusOK || recorder.Body.String() != "response" {
 		t.Fatalf("ServeHTTP() error/next/status/body = %v/%t/%d/%q", err, nextCalled, recorder.Code, recorder.Body.String())
 	}
 	if recorder.Header().Get("X-Result") != "created" || recorder.Header().Get("Set-Cookie") != "" {
 		t.Fatalf("response headers = %v", recorder.Header())
+	}
+	select {
+	case message := <-received:
+		if message.Subject != "orders.order-42.summary" || string(message.Data) != "request" || message.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("NATS message = subject %q data %q headers %v", message.Subject, message.Data, message.Header)
+		}
+		if message.Header.Get("Authorization") != "" {
+			t.Fatal("NATS message forwarded Authorization header")
+		}
+	default:
+		t.Fatal("test service did not receive NATS request")
 	}
 }
 
