@@ -21,6 +21,11 @@ Declared JSON and Caddyfile route schemas, mapping options, limits, and
 fail-closed validation rules are documented in
 [docs/configuration.md](docs/configuration.md).
 
+The gateway provisions an instance-owned, least-privilege NATS connection,
+tracks reconnect readiness, and drains deterministically across overlapping
+Caddy reloads. Configure credentials through Caddy placeholders backed by a
+secret source; never embed production credentials in checked-in configuration.
+
 ## Development workflow
 
 Use the repository task lifecycle skills:

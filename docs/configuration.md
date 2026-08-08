@@ -4,15 +4,24 @@ The `nats_web_gateway` HTTP handler exposes only operations declared by an
 operator. Configuration is validated before Caddy serves traffic. Empty,
 incomplete, ambiguous, or unsafe route sets are rejected.
 
-Configuration currently describes translation policy; request execution is
-introduced by OSS-005 through OSS-008. Until then, the handler validates its
-configuration and passes requests to the next Caddy handler.
+Configuration describes connection lifecycle and translation policy. Request
+execution is introduced by OSS-006 through OSS-008; until then, the handler
+provisions NATS and passes requests to the next Caddy handler.
 
 ## JSON
 
 ```json
 {
   "handler": "nats_web_gateway",
+  "nats": {
+    "urls": ["nats://127.0.0.1:4222"],
+    "username": "gateway",
+    "password": "{env.NATS_GATEWAY_PASSWORD}",
+    "connect_timeout": "5s",
+    "reconnect_wait": "1s",
+    "max_reconnects": -1,
+    "drain_timeout": "30s"
+  },
   "routes": [
     {
       "name": "get_order",
@@ -46,6 +55,13 @@ configuration and passes requests to the next Caddy handler.
 
 ```caddyfile
 nats_web_gateway {
+  nats_urls nats://127.0.0.1:4222
+  nats_user gateway
+  nats_password {env.NATS_GATEWAY_PASSWORD}
+  connect_timeout 5s
+  reconnect_wait 1s
+  max_reconnects -1
+  drain_timeout 30s
   route get_order {
     path /orders/{id}
     methods GET
@@ -63,6 +79,29 @@ nats_web_gateway {
   }
 }
 ```
+
+## NATS connection lifecycle
+
+The `nats` block is required. `urls` contains one or more explicit `nats`,
+`tls`, `ws`, or `wss` server URLs without embedded credentials. The initial
+connection must authenticate successfully before Caddy accepts the
+configuration. A disconnected or reconnecting connection is not ready; a
+successful reconnect restores readiness. `max_reconnects: -1` retries for the
+life of the module instance, while a non-negative value bounds retry attempts.
+
+Each handler instance owns its connection. During a Caddy reload, the new and
+old instances may overlap without sharing mutable state. Cleanup first stops
+readiness, drains subscriptions and buffered publishes for at most
+`drain_timeout`, and then forces closure if the drain does not finish. Reloads
+do not retry application requests or change their delivery semantics.
+
+Use Caddy placeholders backed by an appropriate secret source for `username`
+and `password`; do not put literal production credentials in JSON, Caddyfiles,
+logs, examples, or generated documentation. This operator connection is for
+routes without an end-user security context and must have only the publish and
+inbox-subscribe permissions required by the declared routes. Protected routes
+will use distinct credential-adapted connections; the gateway never expands
+the permissions NATS grants.
 
 Each `parameter` has four arguments: template name, HTTP source (`path` or
 `query`), HTTP field name, and an explicitly anchored regular expression. A
