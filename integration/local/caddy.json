@@ -11,7 +11,25 @@
             {
               "match": [{"path": ["/health"]}],
               "handle": [
-                {"handler": "nats_web_gateway"},
+                {
+                  "handler": "nats_web_gateway",
+                  "routes": [{
+                    "name": "health_fixture",
+                    "path": "/health",
+                    "methods": ["GET"],
+                    "subject": "demo.echo",
+                    "timeout": "2s",
+                    "max_request_body_bytes": 1024,
+                    "max_reply_bytes": 1024,
+                    "response": {
+                      "mode": "raw",
+                      "headers": ["Content-Type"],
+                      "content_type": "text/plain",
+                      "service_error_statuses": {"4001": 400}
+                    },
+                    "stream_mode": "request_reply"
+                  }]
+                },
                 {"handler": "static_response", "body": "ready\n"}
               ]
             }

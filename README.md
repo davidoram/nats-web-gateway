@@ -17,6 +17,10 @@ The project is at an early implementation stage. See
 decisions, [docs/adr](docs/adr) for accepted architecture decisions, and the
 [tasks directory](tasks/README.md) for the ordered backlog.
 
+Declared JSON and Caddyfile route schemas, mapping options, limits, and
+fail-closed validation rules are documented in
+[docs/configuration.md](docs/configuration.md).
+
 ## Development workflow
 
 Use the repository task lifecycle skills:
