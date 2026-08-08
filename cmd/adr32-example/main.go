@@ -91,6 +91,9 @@ func run() error {
 	if err := service.AddEndpoint("echo", micro.HandlerFunc(handleEcho), micro.WithEndpointSubject("demo.echo")); err != nil {
 		return fmt.Errorf("add echo endpoint: %w", err)
 	}
+	if err := service.AddEndpoint("parameterized_echo", micro.HandlerFunc(handleEcho), micro.WithEndpointSubject("demo.echo.*.*")); err != nil {
+		return fmt.Errorf("add parameterized echo endpoint: %w", err)
+	}
 	if err := nc.FlushTimeout(5 * time.Second); err != nil {
 		return fmt.Errorf("flush service subscriptions: %w", err)
 	}

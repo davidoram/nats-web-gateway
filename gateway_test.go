@@ -1,9 +1,11 @@
 package natswebgateway
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	natstest "github.com/nats-io/nats-server/v2/test"
 	"github.com/nats-io/nats.go"
 )
 
@@ -152,8 +155,16 @@ func provisionFakeHandler(t *testing.T) provisionedFake {
 type fakeNATSConnection struct {
 	connected bool
 	options   nats.Options
+	request   func(context.Context, *nats.Msg) (*nats.Msg, error)
 	drains    atomic.Int32
 	closes    atomic.Int32
+}
+
+func (connection *fakeNATSConnection) RequestMsgWithContext(ctx context.Context, message *nats.Msg) (*nats.Msg, error) {
+	if connection.request != nil {
+		return connection.request(ctx, message)
+	}
+	return nil, errors.New("unexpected request")
 }
 
 func (connection *fakeNATSConnection) IsConnected() bool { return connection.connected }
@@ -258,5 +269,74 @@ func TestHandlerPassesRequestToNextHandler(t *testing.T) {
 	}
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("ServeHTTP error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestHandlerExecutesMatchingRequestReplyRoute(t *testing.T) {
+	server := natstest.RunRandClientPortServer()
+	t.Cleanup(server.Shutdown)
+
+	service, err := nats.Connect(server.ClientURL())
+	if err != nil {
+		t.Fatalf("connect test service to NATS: %v", err)
+	}
+	t.Cleanup(service.Close)
+	received := make(chan *nats.Msg, 1)
+	_, err = service.Subscribe("orders.*.*", func(message *nats.Msg) {
+		received <- message
+		reply := nats.NewMsg(message.Reply)
+		reply.Data = []byte("response")
+		reply.Header.Set("X-Result", "created")
+		reply.Header.Set("Set-Cookie", "unsafe")
+		if publishErr := service.PublishMsg(reply); publishErr != nil {
+			t.Errorf("publish test service reply: %v", publishErr)
+		}
+	})
+	if err != nil {
+		t.Fatalf("subscribe test service: %v", err)
+	}
+	if err := service.Flush(); err != nil {
+		t.Fatalf("flush test service subscription: %v", err)
+	}
+
+	handler := validHandler(validRoute("get_order", "/orders/{id}", "orders.{id}.{view}", "POST"))
+	handler.NATS.URLs = []string{server.ClientURL()}
+	handler.Routes[0].Parameters["view"] = Parameter{Source: "query", Name: "view", Pattern: `^[A-Za-z0-9_-]+$`}
+	handler.Routes[0].RequestHeaders = []string{"Content-Type"}
+	handler.Routes[0].Response.Headers = []string{"X-Result"}
+	if err := handler.Provision(caddy.Context{}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = handler.Cleanup() })
+
+	request := httptest.NewRequest(http.MethodPost, "/orders/order-42?view=summary", strings.NewReader("request"))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "secret")
+	recorder := httptest.NewRecorder()
+	nextCalled := false
+	err = handler.ServeHTTP(recorder, request, caddyhttp.HandlerFunc(func(http.ResponseWriter, *http.Request) error { nextCalled = true; return nil }))
+	if err != nil || nextCalled || recorder.Code != http.StatusOK || recorder.Body.String() != "response" {
+		t.Fatalf("ServeHTTP() error/next/status/body = %v/%t/%d/%q", err, nextCalled, recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get("X-Result") != "created" || recorder.Header().Get("Set-Cookie") != "" {
+		t.Fatalf("response headers = %v", recorder.Header())
+	}
+	select {
+	case message := <-received:
+		if message.Subject != "orders.order-42.summary" || string(message.Data) != "request" || message.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("NATS message = subject %q data %q headers %v", message.Subject, message.Data, message.Header)
+		}
+		if message.Header.Get("Authorization") != "" {
+			t.Fatal("NATS message forwarded Authorization header")
+		}
+	default:
+		t.Fatal("test service did not receive NATS request")
+	}
+}
+
+func TestSafeResponseHeadersRejectsInjection(t *testing.T) {
+	_, err := safeResponseHeaders(nats.Header{"Content-Type": {"text/plain\r\nX-Evil: true"}}, []string{"Content-Type"})
+	if err == nil {
+		t.Fatal("safeResponseHeaders() accepted a line break")
 	}
 }

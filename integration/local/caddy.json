@@ -9,7 +9,7 @@
           "listen": [":8080"],
           "routes": [
             {
-              "match": [{"path": ["/health"]}],
+              "match": [{"path": ["/health", "/echo/*"]}],
               "handle": [
                 {
                   "handler": "nats_web_gateway",
@@ -23,10 +23,15 @@
                     "drain_timeout": "5s"
                   },
                   "routes": [{
-                    "name": "health_fixture",
-                    "path": "/health",
-                    "methods": ["GET"],
-                    "subject": "demo.echo",
+                    "name": "echo_fixture",
+                    "path": "/echo/{id}",
+                    "methods": ["POST"],
+                    "subject": "demo.echo.{id}.{view}",
+                    "parameters": {
+                      "id": {"source": "path", "name": "id", "pattern": "^[A-Za-z0-9_-]+$"},
+                      "view": {"source": "query", "name": "view", "pattern": "^[A-Za-z0-9_-]+$"}
+                    },
+                    "request_headers": ["Content-Type", "Traceparent"],
                     "timeout": "2s",
                     "max_request_body_bytes": 1024,
                     "max_reply_bytes": 1024,

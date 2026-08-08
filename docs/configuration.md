@@ -4,9 +4,10 @@ The `nats_web_gateway` HTTP handler exposes only operations declared by an
 operator. Configuration is validated before Caddy serves traffic. Empty,
 incomplete, ambiguous, or unsafe route sets are rejected.
 
-Configuration describes connection lifecycle and translation policy. Request
-execution is introduced by OSS-006 through OSS-008; until then, the handler
-provisions NATS and passes requests to the next Caddy handler.
+Configuration describes connection lifecycle and translation policy. A request
+whose method and path do not match a declared route passes to the next Caddy
+handler. A matched `request_reply` route publishes exactly once and never
+retries automatically.
 
 ## JSON
 
@@ -136,3 +137,61 @@ parameter term query q ^[A-Za-z0-9_-]+$
 
 JSON duration values use Caddy duration strings such as `250ms` or `2s`. Byte
 limits are decimal integers in both JSON and the Caddyfile.
+
+## Request/reply example
+
+The runnable [Go orders service](../examples/orders-service/main.go) handles a
+lookup and a create operation. These routes expose it without allowing callers
+to choose arbitrary NATS subjects:
+
+```caddyfile
+nats_web_gateway {
+  nats_urls nats://127.0.0.1:4222
+  connect_timeout 5s
+  reconnect_wait 1s
+  max_reconnects -1
+  drain_timeout 30s
+  route get_order {
+    path /api/orders/{id}
+    methods GET
+    subject orders.get.{id}.{view}
+    parameter id path id ^[A-Za-z0-9_-]+$
+    parameter view query view ^[A-Za-z0-9_-]+$
+    timeout 2s
+    max_request_body_bytes 1024
+    max_reply_bytes 65536
+    response_mode raw
+    response_headers Content-Type
+    response_content_type application/json
+    stream_mode request_reply
+  }
+  route create_order {
+    path /api/orders
+    methods POST
+    subject orders.create
+    request_headers Content-Type Traceparent
+    timeout 2s
+    max_request_body_bytes 65536
+    max_reply_bytes 65536
+    response_mode raw
+    response_headers Content-Type
+    response_content_type application/json
+    stream_mode request_reply
+  }
+}
+```
+
+Run the service with `go run ./examples/orders-service`, then exercise both
+behaviors through Caddy:
+
+```text
+curl 'http://localhost:8080/api/orders/order-42?view=confirmed'
+curl -X POST -H 'Content-Type: application/json' \
+  --data '{"id":"order-43","status":"pending"}' \
+  http://localhost:8080/api/orders
+```
+
+The first request publishes to `orders.get.order-42.confirmed`. Query values
+must appear exactly once and all path/query values must match their configured
+grammar. The second forwards only `Content-Type` and `Traceparent`; credentials,
+cookies, hop-by-hop headers, and caller-asserted identity are never copied.

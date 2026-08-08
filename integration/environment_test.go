@@ -71,6 +71,27 @@ func TestLocalEnvironment(t *testing.T) {
 		}
 	})
 
+	t.Run("Caddy translates bounded HTTP request reply", func(t *testing.T) {
+		request, err := http.NewRequest(http.MethodPost, envOrDefault("CADDY_URL", defaultCaddyURL)+"/echo/order-42?view=summary", strings.NewReader("hello over HTTP"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Content-Type", "text/plain")
+		request.Header.Set("Authorization", "must-not-forward")
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatalf("HTTP request/reply: %v", err)
+		}
+		defer response.Body.Close()
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != http.StatusOK || string(body) != "hello over HTTP" || response.Header.Get("Content-Type") != "text/plain" {
+			t.Fatalf("HTTP response = %d %q %q", response.StatusCode, body, response.Header.Get("Content-Type"))
+		}
+	})
+
 	t.Run("ADR-32 discovery is available", func(t *testing.T) {
 		response, err := nc.Request("$SRV.PING", nil, 5*time.Second)
 		if err != nil {

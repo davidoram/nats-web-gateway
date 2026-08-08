@@ -2,6 +2,7 @@
 package natswebgateway
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,7 +14,10 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	internalroutes "github.com/davidoram/nats-web-gateway/internal/routes"
+	"github.com/davidoram/nats-web-gateway/internal/translation"
 	"github.com/nats-io/nats.go"
+	"golang.org/x/net/http/httpguts"
 )
 
 func init() {
@@ -30,14 +34,21 @@ type Handler struct {
 	NATS   NATSConnection `json:"nats"`
 	Routes []Route        `json:"routes"`
 
-	lifecycle *connectionLifecycle
-	connect   connectFunc
+	lifecycle      *connectionLifecycle
+	compiledRoutes []compiledRoute
+	connect        connectFunc
 }
 
 type natsConnection interface {
 	IsConnected() bool
+	RequestMsgWithContext(context.Context, *nats.Msg) (*nats.Msg, error)
 	Drain() error
 	Close()
+}
+
+type compiledRoute struct {
+	config Route
+	route  internalroutes.Route
 }
 
 type connectFunc func(string, ...nats.Option) (natsConnection, error)
@@ -143,6 +154,19 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		return fmt.Errorf("connect to NATS: %w", err)
 	}
 	lifecycle.connection = connection
+	h.compiledRoutes = make([]compiledRoute, 0, len(h.Routes))
+	for _, configured := range h.Routes {
+		parameters := make(map[string]internalroutes.Parameter, len(configured.Parameters))
+		for name, parameter := range configured.Parameters {
+			parameters[name] = internalroutes.Parameter{Source: parameter.Source, Name: parameter.Name, Pattern: parameter.Pattern}
+		}
+		compiled, compileErr := internalroutes.Compile(configured.Path, configured.Subject, configured.Methods, parameters)
+		if compileErr != nil {
+			connection.Close()
+			return fmt.Errorf("compile route %q: %w", configured.Name, compileErr)
+		}
+		h.compiledRoutes = append(h.compiledRoutes, compiledRoute{config: configured, route: compiled})
+	}
 	lifecycle.setReady(connection.IsConnected())
 	h.lifecycle = lifecycle
 	return nil
@@ -195,10 +219,71 @@ func parseCaddyfile(helper httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, e
 	return &handler, nil
 }
 
-// ServeHTTP passes the request to the next handler until gateway routes are
-// implemented. It preserves the request context and response writer unchanged.
-func (Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+// ServeHTTP executes the first matching declared request/reply route. Requests
+// outside this handler's declared surface continue through the Caddy chain.
+func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+	for _, candidate := range h.compiledRoutes {
+		if candidate.config.StreamMode != streamModeRequestReply {
+			continue
+		}
+		subject, matched, err := candidate.route.Match(r.Method, r.URL.EscapedPath(), r.URL.Query())
+		if !matched {
+			continue
+		}
+		if err != nil {
+			http.Error(w, "invalid request parameters", http.StatusBadRequest)
+			return nil
+		}
+		if h.lifecycle == nil || !h.Ready() {
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(candidate.config.Timeout))
+		reply, err := translation.Execute(ctx, h.lifecycle.connection, translation.Request{
+			Subject: subject, Header: r.Header, Body: r.Body,
+		}, candidate.config.RequestHeaders, candidate.config.MaxRequestBodyBytes, candidate.config.MaxReplyBytes)
+		cancel()
+		if err != nil {
+			switch {
+			case errors.Is(err, translation.ErrRequestTooLarge):
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			case errors.Is(err, translation.ErrReplyTooLarge):
+				http.Error(w, "upstream reply too large", http.StatusBadGateway)
+			default:
+				http.Error(w, "upstream request failed", http.StatusBadGateway)
+			}
+			return nil
+		}
+		responseHeaders, err := safeResponseHeaders(reply.Header, candidate.config.Response.Headers)
+		if err != nil {
+			http.Error(w, "malformed upstream reply", http.StatusBadGateway)
+			return nil
+		}
+		for name, values := range responseHeaders {
+			for _, value := range values {
+				w.Header().Add(name, value)
+			}
+		}
+		if w.Header().Get("Content-Type") == "" && candidate.config.Response.ContentType != "" {
+			w.Header().Set("Content-Type", candidate.config.Response.ContentType)
+		}
+		_, err = w.Write(reply.Data)
+		return err
+	}
 	return next.ServeHTTP(w, r)
+}
+
+func safeResponseHeaders(source nats.Header, allowlist []string) (http.Header, error) {
+	result := make(http.Header, len(allowlist))
+	for _, name := range allowlist {
+		for _, value := range source.Values(name) {
+			if !httpguts.ValidHeaderFieldValue(value) {
+				return nil, fmt.Errorf("invalid upstream header %q", name)
+			}
+			result.Add(name, value)
+		}
+	}
+	return result, nil
 }
 
 var (

@@ -26,6 +26,15 @@ tracks reconnect readiness, and drains deterministically across overlapping
 Caddy reloads. Configure credentials through Caddy placeholders backed by a
 secret source; never embed production credentials in checked-in configuration.
 
+## Request/reply example
+
+The [Go orders service](examples/orders-service/main.go) demonstrates a small
+API behind declared request/reply routes: a path value and a query value build
+a validated subject, JSON request bodies are bounded, selected HTTP headers are
+forwarded to NATS, and selected reply headers and bounded payloads return to the
+HTTP caller. The matching Caddyfile and JSON configurations, plus curl examples,
+are in [the configuration guide](docs/configuration.md#requestreply-example).
+
 ## Development workflow
 
 Use the repository task lifecycle skills:
