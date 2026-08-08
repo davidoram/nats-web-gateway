@@ -192,11 +192,46 @@ func TestHandlerCleanupBoundsDrain(t *testing.T) {
 	}
 }
 
+func TestHandlerCleanupClosesReconnectingConnectionImmediately(t *testing.T) {
+	handler := validHandler(validRoute("health", "/health", "demo.echo", "GET"))
+	handler.NATS.DrainTimeout = caddy.Duration(time.Hour)
+	fake := &fakeNATSConnection{connected: true}
+	handler.connect = func(_ string, options ...nats.Option) (natsConnection, error) {
+		fake.options = nats.GetDefaultOptions()
+		for _, option := range options {
+			if err := option(&fake.options); err != nil {
+				return nil, err
+			}
+		}
+		return &reconnectingNATSConnection{fake}, nil
+	}
+	if err := handler.Provision(caddy.Context{}); err != nil {
+		t.Fatalf("Provision() error = %v", err)
+	}
+	started := time.Now()
+	if err := handler.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Cleanup() took %s, want immediate reconnect close", elapsed)
+	}
+	if fake.drains.Load() != 1 || fake.closes.Load() != 1 || handler.Ready() {
+		t.Fatalf("cleanup drains/closes/ready = %d/%d/%t", fake.drains.Load(), fake.closes.Load(), handler.Ready())
+	}
+}
+
 type nonClosingDrainConnection struct{ *fakeNATSConnection }
 
 func (connection *nonClosingDrainConnection) Drain() error {
 	connection.drains.Add(1)
 	return nil
+}
+
+type reconnectingNATSConnection struct{ *fakeNATSConnection }
+
+func (connection *reconnectingNATSConnection) Drain() error {
+	connection.drains.Add(1)
+	return nats.ErrConnectionReconnecting
 }
 
 func TestHandlerPassesRequestToNextHandler(t *testing.T) {

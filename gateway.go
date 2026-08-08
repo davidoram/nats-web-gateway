@@ -162,7 +162,15 @@ func (h *Handler) Cleanup() error {
 	}
 	h.lifecycle.cleanup.Do(func() {
 		h.lifecycle.beginStopping()
-		if err := h.lifecycle.connection.Drain(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) && !errors.Is(err, nats.ErrConnectionReconnecting) {
+		err := h.lifecycle.connection.Drain()
+		if errors.Is(err, nats.ErrConnectionClosed) {
+			return
+		}
+		if errors.Is(err, nats.ErrConnectionReconnecting) {
+			h.lifecycle.connection.Close()
+			return
+		}
+		if err != nil {
 			h.lifecycle.cleanupErr = fmt.Errorf("drain NATS connection: %w", err)
 			h.lifecycle.connection.Close()
 			return
