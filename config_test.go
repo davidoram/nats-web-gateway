@@ -14,9 +14,41 @@ import (
 func TestHandlerValidateAcceptsExplicitRoute(t *testing.T) {
 	t.Parallel()
 
-	handler := Handler{Routes: []Route{validRoute("get_order", "/orders/{id}", "orders.{id}", "GET")}}
+	handler := validHandler(validRoute("get_order", "/orders/{id}", "orders.{id}", "GET"))
 	if err := handler.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestHandlerValidateRejectsUnsafeNATSConfiguration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		change func(*NATSConnection)
+		want   string
+	}{
+		{name: "no URLs", change: func(c *NATSConnection) { c.URLs = nil }, want: "at least one"},
+		{name: "relative URL", change: func(c *NATSConnection) { c.URLs = []string{"localhost:4222"} }, want: "absolute"},
+		{name: "unsupported URL scheme", change: func(c *NATSConnection) { c.URLs = []string{"http://localhost:4222"} }, want: "nats, tls, ws, or wss"},
+		{name: "embedded credentials", change: func(c *NATSConnection) { c.URLs = []string{"nats://user:secret@localhost:4222"} }, want: "must not embed credentials"},
+		{name: "missing password", change: func(c *NATSConnection) { c.Username = "gateway" }, want: "configured together"},
+		{name: "literal password", change: func(c *NATSConnection) { c.Username, c.Password = "gateway", "secret" }, want: "environment placeholder"},
+		{name: "zero connect timeout", change: func(c *NATSConnection) { c.ConnectTimeout = 0 }, want: "connect_timeout"},
+		{name: "zero reconnect wait", change: func(c *NATSConnection) { c.ReconnectWait = 0 }, want: "reconnect_wait"},
+		{name: "invalid reconnect count", change: func(c *NATSConnection) { c.MaxReconnects = -2 }, want: "max_reconnects"},
+		{name: "zero drain timeout", change: func(c *NATSConnection) { c.DrainTimeout = 0 }, want: "drain_timeout"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			handler := validHandler(validRoute("get_order", "/orders/{id}", "orders.{id}", "GET"))
+			test.change(&handler.NATS)
+			err := handler.Validate()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Validate() error = %v, want error containing %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -103,7 +135,7 @@ func TestHandlerValidateRejectsUnsafeConfiguration(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			handler := Handler{Routes: []Route{validRoute("get_order", "/orders/{id}", "orders.{id}", "GET")}}
+			handler := validHandler(validRoute("get_order", "/orders/{id}", "orders.{id}", "GET"))
 			test.change(&handler)
 			err := handler.Validate()
 			if err == nil || !strings.Contains(err.Error(), test.want) {
@@ -121,7 +153,7 @@ func TestHandlerValidateAllowsNonOverlappingRoutes(t *testing.T) {
 		validRoute("get_nested", "/orders/{id}/lines", "orders.lines.{id}", "GET"),
 		validRoute("get_health", "/health", "health", "GET"),
 	}
-	handler := Handler{Routes: append([]Route{validRoute("get_order", "/orders/{id}", "orders.{id}", "GET")}, tests...)}
+	handler := validHandler(append([]Route{validRoute("get_order", "/orders/{id}", "orders.{id}", "GET")}, tests...)...)
 	if err := handler.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
@@ -132,7 +164,7 @@ func TestHandlerValidateAcceptsQuerySubjectParameter(t *testing.T) {
 
 	route := validRoute("search_orders", "/orders", "orders.search.{term}", "GET")
 	route.Parameters["term"] = Parameter{Source: "query", Name: "q", Pattern: `^[A-Za-z0-9_-]+$`}
-	if err := (Handler{Routes: []Route{route}}).Validate(); err != nil {
+	if err := validHandler(route).Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
 }
@@ -142,7 +174,7 @@ func TestHandlerValidateAllowsRootAndSingleSegmentParameterRoutes(t *testing.T) 
 
 	root := validRoute("root", "/", "root", "GET")
 	parameterized := validRoute("named", "/{id}", "named.{id}", "GET")
-	if err := (Handler{Routes: []Route{root, parameterized}}).Validate(); err != nil {
+	if err := validHandler(root, parameterized).Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
 }
@@ -152,7 +184,7 @@ func TestHandlerValidateRejectsDuplicateRootRoutes(t *testing.T) {
 
 	left := validRoute("root_one", "/", "root.one", "GET")
 	right := validRoute("root_two", "/", "root.two", "GET")
-	err := (Handler{Routes: []Route{left, right}}).Validate()
+	err := validHandler(left, right).Validate()
 	if err == nil || !strings.Contains(err.Error(), "overlapping paths and methods") {
 		t.Fatalf("Validate() error = %v, want overlapping route error", err)
 	}
@@ -162,6 +194,15 @@ func TestJSONConfiguration(t *testing.T) {
 	t.Parallel()
 
 	input := `{
+  "nats": {
+    "urls": ["nats://127.0.0.1:4222"],
+    "username": "gateway",
+    "password": "{env.NATS_PASSWORD}",
+    "connect_timeout": "5s",
+    "reconnect_wait": "1s",
+    "max_reconnects": -1,
+    "drain_timeout": "30s"
+  },
   "routes": [{
     "name": "get_order",
     "path": "/orders/{id}",
@@ -197,6 +238,13 @@ func TestCaddyfileConfiguration(t *testing.T) {
 	t.Parallel()
 
 	input := `nats_web_gateway {
+  nats_urls nats://127.0.0.1:4222
+  nats_user gateway
+  nats_password {env.NATS_PASSWORD}
+  connect_timeout 5s
+  reconnect_wait 1s
+  max_reconnects -1
+  drain_timeout 30s
   route get_order {
     path /orders/{id}
     methods GET
@@ -229,6 +277,11 @@ func TestCaddyfileConfigurationRejectsUnknownOption(t *testing.T) {
 	t.Parallel()
 
 	input := `nats_web_gateway {
+  nats_urls nats://127.0.0.1:4222
+  connect_timeout 5s
+  reconnect_wait 1s
+  max_reconnects -1
+  drain_timeout 30s
   route get_order {
     arbitrary_subject true
   }
@@ -244,6 +297,11 @@ func TestCaddyfileConfigurationRejectsDuplicateOption(t *testing.T) {
 	t.Parallel()
 
 	input := `nats_web_gateway {
+  nats_urls nats://127.0.0.1:4222
+  connect_timeout 5s
+  reconnect_wait 1s
+  max_reconnects -1
+  drain_timeout 30s
   route get_order {
     path /orders
     path /other
@@ -261,6 +319,11 @@ func TestCaddyfileAdapterRegistration(t *testing.T) {
 
 	input := `:8080 {
   nats_web_gateway {
+    nats_urls nats://127.0.0.1:4222
+    connect_timeout 5s
+    reconnect_wait 1s
+    max_reconnects -1
+    drain_timeout 30s
     route health {
       path /health
       methods GET
@@ -318,5 +381,18 @@ func validRoute(name, path, subject, method string) Route {
 			ServiceErrorStatuses: map[string]int{"4001": 400},
 		},
 		StreamMode: streamModeRequestReply,
+	}
+}
+
+func validHandler(routes ...Route) Handler {
+	return Handler{
+		NATS: NATSConnection{
+			URLs:           []string{"nats://127.0.0.1:4222"},
+			ConnectTimeout: caddy.Duration(5 * time.Second),
+			ReconnectWait:  caddy.Duration(time.Second),
+			MaxReconnects:  -1,
+			DrainTimeout:   caddy.Duration(30 * time.Second),
+		},
+		Routes: routes,
 	}
 }

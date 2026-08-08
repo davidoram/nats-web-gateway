@@ -36,6 +36,9 @@ services:
   caddy:
     image: docker.io/library/caddy:2.11.4-alpine@sha256:1172d4213087d3fc30bafc7ff2c2896180eb0c41ff7f75f315568fb36cabdcba
     command: ["/usr/local/bin/caddy-local", "run", "--config", "/etc/caddy/caddy.json"]
+    environment:
+      NATS_USER: gateway
+      NATS_PASSWORD: local-gateway-only
     ports:
       - "127.0.0.1:18080:8080"
     volumes:

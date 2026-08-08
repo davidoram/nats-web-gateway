@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"mime"
 	"net/http"
+	"net/url"
 	"regexp"
 	"regexp/syntax"
 	"slices"
@@ -27,6 +28,7 @@ const (
 
 var placeholderPattern = regexp.MustCompile(`\{([A-Za-z][A-Za-z0-9_]*)\}`)
 var queryNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_.-]*$`)
+var secretPlaceholderPattern = regexp.MustCompile(`^\{env\.[A-Za-z_][A-Za-z0-9_]*\}$`)
 
 // Parameter declares the sole HTTP source and accepted grammar for a template value.
 type Parameter struct {
@@ -48,6 +50,53 @@ type Route struct {
 	MaxReplyBytes       int64                `json:"max_reply_bytes"`
 	Response            Response             `json:"response"`
 	StreamMode          string               `json:"stream_mode"`
+}
+
+// NATSConnection declares the operator-owned connection used by routes which
+// do not carry an end-user security context. Protected-route connections are
+// introduced separately with credential adapters.
+type NATSConnection struct {
+	URLs           []string       `json:"urls"`
+	Username       string         `json:"username,omitempty"`
+	Password       string         `json:"password,omitempty"`
+	ConnectTimeout caddy.Duration `json:"connect_timeout,omitempty"`
+	ReconnectWait  caddy.Duration `json:"reconnect_wait,omitempty"`
+	MaxReconnects  int            `json:"max_reconnects,omitempty"`
+	DrainTimeout   caddy.Duration `json:"drain_timeout,omitempty"`
+}
+
+func (connection NATSConnection) validate() error {
+	if len(connection.URLs) == 0 {
+		return errors.New("nats.urls must contain at least one server URL")
+	}
+	for i, rawURL := range connection.URLs {
+		parsed, err := url.Parse(rawURL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "nats" && parsed.Scheme != "tls" && parsed.Scheme != "ws" && parsed.Scheme != "wss") {
+			return fmt.Errorf("nats.urls[%d] must be an absolute nats, tls, ws, or wss URL", i)
+		}
+		if parsed.User != nil {
+			return fmt.Errorf("nats.urls[%d] must not embed credentials", i)
+		}
+	}
+	if (connection.Username == "") != (connection.Password == "") {
+		return errors.New("nats.username and nats.password must be configured together")
+	}
+	if connection.Password != "" && !secretPlaceholderPattern.MatchString(connection.Password) {
+		return errors.New("nats.password must be a single Caddy environment placeholder")
+	}
+	if time.Duration(connection.ConnectTimeout) <= 0 {
+		return errors.New("nats.connect_timeout must be greater than zero")
+	}
+	if time.Duration(connection.ReconnectWait) <= 0 {
+		return errors.New("nats.reconnect_wait must be greater than zero")
+	}
+	if connection.MaxReconnects < -1 {
+		return errors.New("nats.max_reconnects must be -1 or greater")
+	}
+	if time.Duration(connection.DrainTimeout) <= 0 {
+		return errors.New("nats.drain_timeout must be greater than zero")
+	}
+	return nil
 }
 
 // Response declares safe HTTP behavior for a NATS reply.
@@ -418,17 +467,74 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 	if d.CountRemainingArgs() != 0 {
 		return d.ArgErr()
 	}
+	seenOptions := make(map[string]struct{})
 	for d.NextBlock(0) {
-		if d.Val() != "route" {
+		if d.Val() == "route" {
+			route, err := unmarshalRoute(d.NewFromNextSegment())
+			if err != nil {
+				return err
+			}
+			h.Routes = append(h.Routes, route)
+			continue
+		}
+		if _, exists := seenOptions[d.Val()]; exists {
+			return d.Errf("NATS option %q already specified", d.Val())
+		}
+		seenOptions[d.Val()] = struct{}{}
+		switch d.Val() {
+		case "nats_urls":
+			h.NATS.URLs = d.RemainingArgs()
+			if len(h.NATS.URLs) == 0 {
+				return d.ArgErr()
+			}
+		case "nats_user":
+			if !d.AllArgs(&h.NATS.Username) {
+				return d.ArgErr()
+			}
+		case "nats_password":
+			if !d.AllArgs(&h.NATS.Password) {
+				return d.ArgErr()
+			}
+		case "connect_timeout":
+			if err := parseDuration(d, &h.NATS.ConnectTimeout); err != nil {
+				return err
+			}
+		case "reconnect_wait":
+			if err := parseDuration(d, &h.NATS.ReconnectWait); err != nil {
+				return err
+			}
+		case "max_reconnects":
+			var value string
+			if !d.AllArgs(&value) {
+				return d.ArgErr()
+			}
+			parsed, err := strconv.Atoi(value)
+			if err != nil {
+				return d.Errf("invalid max_reconnects %q", value)
+			}
+			h.NATS.MaxReconnects = parsed
+		case "drain_timeout":
+			if err := parseDuration(d, &h.NATS.DrainTimeout); err != nil {
+				return err
+			}
+		default:
 			return d.Errf("unrecognized subdirective %q", d.Val())
 		}
-		route, err := unmarshalRoute(d.NewFromNextSegment())
-		if err != nil {
-			return err
-		}
-		h.Routes = append(h.Routes, route)
 	}
 	return h.Validate()
+}
+
+func parseDuration(d *caddyfile.Dispenser, target *caddy.Duration) error {
+	var value string
+	if !d.AllArgs(&value) {
+		return d.ArgErr()
+	}
+	duration, err := caddy.ParseDuration(value)
+	if err != nil {
+		return d.WrapErr(err)
+	}
+	*target = caddy.Duration(duration)
+	return nil
 }
 
 func unmarshalRoute(d *caddyfile.Dispenser) (Route, error) {
