@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -81,6 +82,32 @@ func TestHandlerProvisionFailureDoesNotPublishLifecycle(t *testing.T) {
 	err := handler.Provision(caddy.Context{})
 	if !errors.Is(err, wantErr) || handler.Ready() {
 		t.Fatalf("Provision() error/ready = %v/%t, want wrapped failure/false", err, handler.Ready())
+	}
+}
+
+func TestConnectionLifecycleShutdownWinsConcurrentReconnect(t *testing.T) {
+	t.Parallel()
+
+	for range 1_000 {
+		lifecycle := &connectionLifecycle{ready: true}
+		start := make(chan struct{})
+		var transitions sync.WaitGroup
+		transitions.Add(2)
+		go func() {
+			defer transitions.Done()
+			<-start
+			lifecycle.setReady(true)
+		}()
+		go func() {
+			defer transitions.Done()
+			<-start
+			lifecycle.beginStopping()
+		}()
+		close(start)
+		transitions.Wait()
+		if lifecycle.isReady() {
+			t.Fatal("lifecycle became ready after concurrent shutdown and reconnect")
+		}
 	}
 }
 

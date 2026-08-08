@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -45,13 +44,36 @@ type connectFunc func(string, ...nats.Option) (natsConnection, error)
 
 type connectionLifecycle struct {
 	connection natsConnection
-	ready      atomic.Bool
-	stopping   atomic.Bool
+	stateMu    sync.RWMutex
+	ready      bool
+	stopping   bool
 	closed     chan struct{}
 	closedOnce sync.Once
 	cleanup    sync.Once
 	drainWait  time.Duration
 	cleanupErr error
+}
+
+func (lifecycle *connectionLifecycle) setReady(ready bool) {
+	lifecycle.stateMu.Lock()
+	defer lifecycle.stateMu.Unlock()
+	if ready && lifecycle.stopping {
+		return
+	}
+	lifecycle.ready = ready
+}
+
+func (lifecycle *connectionLifecycle) beginStopping() {
+	lifecycle.stateMu.Lock()
+	lifecycle.stopping = true
+	lifecycle.ready = false
+	lifecycle.stateMu.Unlock()
+}
+
+func (lifecycle *connectionLifecycle) isReady() bool {
+	lifecycle.stateMu.RLock()
+	defer lifecycle.stateMu.RUnlock()
+	return lifecycle.ready
 }
 
 // CaddyModule returns the Caddy module information for Handler.
@@ -106,14 +128,10 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		nats.ReconnectWait(time.Duration(h.NATS.ReconnectWait)),
 		nats.MaxReconnects(h.NATS.MaxReconnects),
 		nats.DrainTimeout(time.Duration(h.NATS.DrainTimeout)),
-		nats.DisconnectErrHandler(func(_ *nats.Conn, _ error) { lifecycle.ready.Store(false) }),
-		nats.ReconnectHandler(func(_ *nats.Conn) {
-			if !lifecycle.stopping.Load() {
-				lifecycle.ready.Store(true)
-			}
-		}),
+		nats.DisconnectErrHandler(func(_ *nats.Conn, _ error) { lifecycle.setReady(false) }),
+		nats.ReconnectHandler(func(_ *nats.Conn) { lifecycle.setReady(true) }),
 		nats.ClosedHandler(func(_ *nats.Conn) {
-			lifecycle.ready.Store(false)
+			lifecycle.setReady(false)
 			lifecycle.closedOnce.Do(func() { close(lifecycle.closed) })
 		}),
 	}
@@ -125,7 +143,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		return fmt.Errorf("connect to NATS: %w", err)
 	}
 	lifecycle.connection = connection
-	lifecycle.ready.Store(connection.IsConnected())
+	lifecycle.setReady(connection.IsConnected())
 	h.lifecycle = lifecycle
 	return nil
 }
@@ -133,7 +151,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 // Ready reports whether this instance currently has a usable NATS connection.
 // It is deliberately separate from process liveness.
 func (h *Handler) Ready() bool {
-	return h != nil && h.lifecycle != nil && h.lifecycle.ready.Load()
+	return h != nil && h.lifecycle != nil && h.lifecycle.isReady()
 }
 
 // Cleanup drains and closes only this handler instance's connection. This
@@ -143,8 +161,7 @@ func (h *Handler) Cleanup() error {
 		return nil
 	}
 	h.lifecycle.cleanup.Do(func() {
-		h.lifecycle.stopping.Store(true)
-		h.lifecycle.ready.Store(false)
+		h.lifecycle.beginStopping()
 		if err := h.lifecycle.connection.Drain(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) && !errors.Is(err, nats.ErrConnectionReconnecting) {
 			h.lifecycle.cleanupErr = fmt.Errorf("drain NATS connection: %w", err)
 			h.lifecycle.connection.Close()
