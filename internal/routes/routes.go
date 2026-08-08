@@ -45,15 +45,18 @@ func (r Route) Match(method, escapedPath string, query url.Values) (string, bool
 	}
 	values := make(map[string]string, len(r.Parameters))
 	for i := range want {
+		value, err := url.PathUnescape(got[i])
+		if err != nil {
+			return "", true, ErrInvalidParameter
+		}
 		name, placeholder := placeholderName(want[i])
 		if !placeholder {
-			if want[i] != got[i] {
+			if want[i] != value {
 				return "", false, nil
 			}
 			continue
 		}
-		value, err := url.PathUnescape(got[i])
-		if err != nil || !r.patterns[name].MatchString(value) {
+		if !matchesEntireValue(r.patterns[name], value) {
 			return "", true, ErrInvalidParameter
 		}
 		values[name] = value
@@ -63,7 +66,7 @@ func (r Route) Match(method, escapedPath string, query url.Values) (string, bool
 			continue
 		}
 		items, ok := query[parameter.Name]
-		if !ok || len(items) != 1 || !r.patterns[name].MatchString(items[0]) {
+		if !ok || len(items) != 1 || !matchesEntireValue(r.patterns[name], items[0]) {
 			return "", true, ErrInvalidParameter
 		}
 		values[name] = items[0]
@@ -73,6 +76,11 @@ func (r Route) Match(method, escapedPath string, query url.Values) (string, bool
 		subject = strings.ReplaceAll(subject, "{"+name+"}", value)
 	}
 	return subject, true, nil
+}
+
+func matchesEntireValue(pattern *regexp.Regexp, value string) bool {
+	match := pattern.FindStringIndex(value)
+	return match != nil && match[0] == 0 && match[1] == len(value)
 }
 
 func segments(path string) []string {

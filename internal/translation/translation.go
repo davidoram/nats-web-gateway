@@ -23,11 +23,11 @@ type Requester interface {
 type Request struct {
 	Subject string
 	Header  http.Header
-	Body    io.Reader
+	Body    io.ReadCloser
 }
 
 func Execute(ctx context.Context, requester Requester, request Request, requestHeaders []string, maxRequest, maxReply int64) (*nats.Msg, error) {
-	body, err := readBounded(request.Body, maxRequest, ErrRequestTooLarge)
+	body, err := readBounded(ctx, request.Body, maxRequest, ErrRequestTooLarge)
 	if err != nil {
 		return nil, err
 	}
@@ -48,12 +48,17 @@ func Execute(ctx context.Context, requester Requester, request Request, requestH
 	return reply, nil
 }
 
-func readBounded(reader io.Reader, limit int64, limitErr error) ([]byte, error) {
+func readBounded(ctx context.Context, reader io.ReadCloser, limit int64, limitErr error) ([]byte, error) {
 	if reader == nil {
 		return nil, nil
 	}
+	stopClose := context.AfterFunc(ctx, func() { _ = reader.Close() })
 	limited := io.LimitReader(reader, limit+1)
 	data, err := io.ReadAll(limited)
+	stopped := stopClose()
+	if ctxErr := ctx.Err(); ctxErr != nil && (!stopped || err != nil) {
+		return nil, fmt.Errorf("read body: %w", ctxErr)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
 	}
