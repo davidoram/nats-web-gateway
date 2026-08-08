@@ -1,9 +1,11 @@
 package natswebgateway
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -152,8 +154,16 @@ func provisionFakeHandler(t *testing.T) provisionedFake {
 type fakeNATSConnection struct {
 	connected bool
 	options   nats.Options
+	request   func(context.Context, *nats.Msg) (*nats.Msg, error)
 	drains    atomic.Int32
 	closes    atomic.Int32
+}
+
+func (connection *fakeNATSConnection) RequestMsgWithContext(ctx context.Context, message *nats.Msg) (*nats.Msg, error) {
+	if connection.request != nil {
+		return connection.request(ctx, message)
+	}
+	return nil, errors.New("unexpected request")
 }
 
 func (connection *fakeNATSConnection) IsConnected() bool { return connection.connected }
@@ -258,5 +268,55 @@ func TestHandlerPassesRequestToNextHandler(t *testing.T) {
 	}
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("ServeHTTP error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestHandlerExecutesMatchingRequestReplyRoute(t *testing.T) {
+	handler := validHandler(validRoute("get_order", "/orders/{id}", "orders.{id}.{view}", "POST"))
+	handler.Routes[0].Parameters["view"] = Parameter{Source: "query", Name: "view", Pattern: `^[A-Za-z0-9_-]+$`}
+	handler.Routes[0].RequestHeaders = []string{"Content-Type"}
+	handler.Routes[0].Response.Headers = []string{"X-Result"}
+	fake := &fakeNATSConnection{connected: true}
+	fake.request = func(ctx context.Context, message *nats.Msg) (*nats.Msg, error) {
+		if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > 2*time.Second {
+			t.Fatal("request context did not carry route deadline")
+		}
+		if message.Subject != "orders.order-42.summary" || string(message.Data) != "request" || message.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("NATS message = subject %q data %q headers %v", message.Subject, message.Data, message.Header)
+		}
+		return &nats.Msg{Data: []byte("response"), Header: nats.Header{"X-Result": {"created"}, "Set-Cookie": {"unsafe"}}}, nil
+	}
+	handler.connect = func(_ string, options ...nats.Option) (natsConnection, error) {
+		fake.options = nats.GetDefaultOptions()
+		for _, option := range options {
+			if err := option(&fake.options); err != nil {
+				return nil, err
+			}
+		}
+		return fake, nil
+	}
+	if err := handler.Provision(caddy.Context{}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = handler.Cleanup() })
+
+	request := httptest.NewRequest(http.MethodPost, "/orders/order-42?view=summary", strings.NewReader("request"))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "secret")
+	recorder := httptest.NewRecorder()
+	nextCalled := false
+	err := handler.ServeHTTP(recorder, request, caddyhttp.HandlerFunc(func(http.ResponseWriter, *http.Request) error { nextCalled = true; return nil }))
+	if err != nil || nextCalled || recorder.Code != http.StatusOK || recorder.Body.String() != "response" {
+		t.Fatalf("ServeHTTP() error/next/status/body = %v/%t/%d/%q", err, nextCalled, recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get("X-Result") != "created" || recorder.Header().Get("Set-Cookie") != "" {
+		t.Fatalf("response headers = %v", recorder.Header())
+	}
+}
+
+func TestSafeResponseHeadersRejectsInjection(t *testing.T) {
+	_, err := safeResponseHeaders(nats.Header{"Content-Type": {"text/plain\r\nX-Evil: true"}}, []string{"Content-Type"})
+	if err == nil {
+		t.Fatal("safeResponseHeaders() accepted a line break")
 	}
 }
