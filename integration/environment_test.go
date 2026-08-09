@@ -92,6 +92,39 @@ func TestLocalEnvironment(t *testing.T) {
 		}
 	})
 
+	t.Run("Caddy maps protocol failures deterministically", func(t *testing.T) {
+		tests := []struct {
+			name, method, path, body string
+			wantStatus               int
+		}{
+			{name: "mapped ADR-32 error", method: http.MethodPost, path: "/echo/order-42?view=summary", body: "error", wantStatus: http.StatusBadRequest},
+			{name: "no responders", method: http.MethodGet, path: "/errors/no-responders", wantStatus: http.StatusServiceUnavailable},
+			{name: "publish permission", method: http.MethodGet, path: "/errors/permission", wantStatus: http.StatusForbidden},
+			{name: "malformed JSON", method: http.MethodGet, path: "/errors/malformed", wantStatus: http.StatusBadGateway},
+			{name: "deadline", method: http.MethodGet, path: "/errors/timeout", wantStatus: http.StatusGatewayTimeout},
+		}
+		for _, test := range tests {
+			t.Run(test.name, func(t *testing.T) {
+				request, err := http.NewRequest(test.method, envOrDefault("CADDY_URL", defaultCaddyURL)+test.path, strings.NewReader(test.body))
+				if err != nil {
+					t.Fatal(err)
+				}
+				response, err := http.DefaultClient.Do(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer response.Body.Close()
+				body, err := io.ReadAll(io.LimitReader(response.Body, 2048))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if response.StatusCode != test.wantStatus || response.Header.Get("Content-Type") != "application/json" || !strings.Contains(string(body), `"error"`) {
+					t.Fatalf("failure response = %d %q %q", response.StatusCode, response.Header.Get("Content-Type"), body)
+				}
+			})
+		}
+	})
+
 	t.Run("ADR-32 discovery is available", func(t *testing.T) {
 		response, err := nc.Request("$SRV.PING", nil, 5*time.Second)
 		if err != nil {

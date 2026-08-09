@@ -20,7 +20,8 @@ import (
 )
 
 const (
-	responseModeRaw        = "raw"
+	responseModeJSON       = "json"
+	responseModeBinary     = "binary"
 	streamModeRequestReply = "request_reply"
 	streamModeCoreSSE      = "core_sse"
 	streamModeJetStreamSSE = "jetstream_sse"
@@ -104,6 +105,8 @@ type Response struct {
 	Mode                 string         `json:"mode"`
 	Headers              []string       `json:"headers,omitempty"`
 	ContentType          string         `json:"content_type,omitempty"`
+	Representations      []string       `json:"representations,omitempty"`
+	NegotiateAccept      bool           `json:"negotiate_accept,omitempty"`
 	ServiceErrorStatuses map[string]int `json:"service_error_statuses,omitempty"`
 }
 
@@ -163,19 +166,42 @@ func (route Route) validate() error {
 	if route.StreamMode != streamModeRequestReply && route.StreamMode != streamModeCoreSSE && route.StreamMode != streamModeJetStreamSSE {
 		return fmt.Errorf("unsupported stream_mode %q", route.StreamMode)
 	}
-	if route.Response.Mode != responseModeRaw {
+	if route.Response.Mode != responseModeJSON && route.Response.Mode != responseModeBinary {
 		return fmt.Errorf("unsupported response mode %q", route.Response.Mode)
 	}
 	if err := validateHeaderList("response.headers", route.Response.Headers); err != nil {
 		return err
 	}
-	if route.Response.ContentType != "" {
-		if strings.ContainsAny(route.Response.ContentType, "\r\n") {
-			return errors.New("response.content_type must be a valid media type without line breaks")
+	if route.Response.ContentType == "" {
+		return errors.New("response.content_type is required")
+	}
+	contentType, err := validateResponseMediaType("response.content_type", route.Response.ContentType)
+	if err != nil {
+		return err
+	}
+	if route.Response.Mode == responseModeJSON && contentType != "application/json" && !strings.HasSuffix(contentType, "+json") {
+		return errors.New("response.content_type must be application/json or a +json media type in json mode")
+	}
+	if route.Response.NegotiateAccept && len(route.Response.Representations) == 0 {
+		return errors.New("response.representations is required when negotiate_accept is enabled")
+	}
+	if !route.Response.NegotiateAccept && len(route.Response.Representations) != 0 {
+		return errors.New("response.representations requires negotiate_accept")
+	}
+	seenRepresentations := make(map[string]struct{}, len(route.Response.Representations)+1)
+	seenRepresentations[contentType] = struct{}{}
+	for i, representation := range route.Response.Representations {
+		mediaType, mediaErr := validateResponseMediaType(fmt.Sprintf("response.representations[%d]", i), representation)
+		if mediaErr != nil {
+			return mediaErr
 		}
-		if _, _, err := mime.ParseMediaType(route.Response.ContentType); err != nil {
-			return fmt.Errorf("response.content_type: %w", err)
+		if route.Response.Mode == responseModeJSON && mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json") {
+			return fmt.Errorf("response.representations[%d] must be a JSON media type in json mode", i)
 		}
+		if _, exists := seenRepresentations[mediaType]; exists {
+			return fmt.Errorf("response.representations contains duplicate media type %q", mediaType)
+		}
+		seenRepresentations[mediaType] = struct{}{}
 	}
 	for code, status := range route.Response.ServiceErrorStatuses {
 		if !validServiceErrorCode(code) {
@@ -186,6 +212,17 @@ func (route Route) validate() error {
 		}
 	}
 	return nil
+}
+
+func validateResponseMediaType(field, value string) (string, error) {
+	if strings.ContainsAny(value, "\r\n") {
+		return "", fmt.Errorf("%s must be a valid media type without line breaks", field)
+	}
+	mediaType, parameters, err := mime.ParseMediaType(value)
+	if err != nil || len(parameters) != 0 || mediaType != value {
+		return "", fmt.Errorf("%s must be a canonical media type without parameters", field)
+	}
+	return mediaType, nil
 }
 
 func validName(value string) bool {
@@ -611,6 +648,21 @@ func unmarshalRoute(d *caddyfile.Dispenser) (Route, error) {
 			if !d.AllArgs(&route.Response.ContentType) {
 				return route, d.ArgErr()
 			}
+		case "response_representations":
+			route.Response.Representations = d.RemainingArgs()
+			if len(route.Response.Representations) == 0 {
+				return route, d.ArgErr()
+			}
+		case "negotiate_accept":
+			var value string
+			if !d.AllArgs(&value) {
+				return route, d.ArgErr()
+			}
+			parsed, err := strconv.ParseBool(value)
+			if err != nil {
+				return route, d.Errf("invalid negotiate_accept %q", value)
+			}
+			route.Response.NegotiateAccept = parsed
 		case "service_error_status":
 			var code, statusValue string
 			if !d.AllArgs(&code, &statusValue) {

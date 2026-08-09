@@ -9,7 +9,7 @@
           "listen": [":8080"],
           "routes": [
             {
-              "match": [{"path": ["/health", "/echo/*"]}],
+              "match": [{"path": ["/health", "/echo/*", "/errors/*"]}],
               "handle": [
                 {
                   "handler": "nats_web_gateway",
@@ -36,11 +36,51 @@
                     "max_request_body_bytes": 1024,
                     "max_reply_bytes": 1024,
                     "response": {
-                      "mode": "raw",
+                      "mode": "binary",
                       "headers": ["Content-Type"],
                       "content_type": "text/plain",
                       "service_error_statuses": {"4001": 400}
                     },
+                    "stream_mode": "request_reply"
+                  }, {
+                    "name": "missing_fixture",
+                    "path": "/errors/no-responders",
+                    "methods": ["GET"],
+                    "subject": "demo.missing",
+                    "timeout": "2s",
+                    "max_request_body_bytes": 1024,
+                    "max_reply_bytes": 1024,
+                    "response": {"mode": "binary", "content_type": "application/octet-stream"},
+                    "stream_mode": "request_reply"
+                  }, {
+                    "name": "permission_fixture",
+                    "path": "/errors/permission",
+                    "methods": ["GET"],
+                    "subject": "denied.subject",
+                    "timeout": "2s",
+                    "max_request_body_bytes": 1024,
+                    "max_reply_bytes": 1024,
+                    "response": {"mode": "binary", "content_type": "application/octet-stream"},
+                    "stream_mode": "request_reply"
+                  }, {
+                    "name": "malformed_fixture",
+                    "path": "/errors/malformed",
+                    "methods": ["GET"],
+                    "subject": "demo.malformed",
+                    "timeout": "2s",
+                    "max_request_body_bytes": 1024,
+                    "max_reply_bytes": 1024,
+                    "response": {"mode": "json", "content_type": "application/json"},
+                    "stream_mode": "request_reply"
+                  }, {
+                    "name": "slow_fixture",
+                    "path": "/errors/timeout",
+                    "methods": ["GET"],
+                    "subject": "demo.slow",
+                    "timeout": "100ms",
+                    "max_request_body_bytes": 1024,
+                    "max_reply_bytes": 1024,
+                    "response": {"mode": "json", "content_type": "application/json"},
                     "stream_mode": "request_reply"
                   }]
                 },

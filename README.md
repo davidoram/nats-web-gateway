@@ -26,9 +26,15 @@ tracks reconnect readiness, and drains deterministically across overlapping
 Caddy reloads. Configure credentials through Caddy placeholders backed by a
 secret source; never embed production credentials in checked-in configuration.
 
-## Request/reply example
+## Request/reply examples
 
-The [Go orders service](examples/orders-service/main.go) demonstrates a small API behind declared request/reply routes: a path value and a query value build a validated subject, JSON request bodies are bounded, selected HTTP headers are forwarded to NATS, and selected reply headers and bounded payloads return to the HTTP caller. The matching Caddyfile and JSON configurations, plus curl examples, are in [the configuration guide](docs/configuration.md#requestreply-example).
+The [Go orders service](examples/orders-service/main.go) demonstrates a
+concurrency-safe in-memory create-or-replace and lookup API, validated JSON
+replies, deterministic domain errors, and optional `Accept` negotiation. The
+[Go image service](examples/images-service/main.go) returns a bounded PNG with
+a fixed safe content type. Their matching [Caddyfile](examples/Caddyfile), JSON
+configuration, and curl examples are in the
+[configuration guide](docs/configuration.md#requestreply-examples).
 
 ## Development workflow
 

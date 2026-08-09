@@ -2,6 +2,7 @@ package natswebgateway
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -120,7 +121,16 @@ func TestHandlerValidateRejectsUnsafeConfiguration(t *testing.T) {
 		{name: "zero reply limit", change: func(h *Handler) { h.Routes[0].MaxReplyBytes = 0 }, want: "max_reply_bytes"},
 		{name: "unknown stream mode", change: func(h *Handler) { h.Routes[0].StreamMode = "stream" }, want: "unsupported stream_mode"},
 		{name: "unknown response mode", change: func(h *Handler) { h.Routes[0].Response.Mode = "passthrough" }, want: "unsupported response mode"},
+		{name: "missing response content type", change: func(h *Handler) { h.Routes[0].Response.ContentType = "" }, want: "content_type is required"},
+		{name: "JSON mode with binary content type", change: func(h *Handler) { h.Routes[0].Response.Mode = responseModeJSON }, want: "+json media type"},
 		{name: "header injection content type", change: func(h *Handler) { h.Routes[0].Response.ContentType = "text/plain\r\nX-Evil: true" }, want: "content_type"},
+		{name: "content type parameters", change: func(h *Handler) { h.Routes[0].Response.ContentType = "application/json; charset=utf-8" }, want: "without parameters"},
+		{name: "negotiation without representations", change: func(h *Handler) { h.Routes[0].Response.NegotiateAccept = true }, want: "representations is required"},
+		{name: "representations without negotiation", change: func(h *Handler) { h.Routes[0].Response.Representations = []string{"image/png"} }, want: "requires negotiate_accept"},
+		{name: "duplicate representation", change: func(h *Handler) {
+			h.Routes[0].Response.NegotiateAccept = true
+			h.Routes[0].Response.Representations = []string{"application/octet-stream"}
+		}, want: "duplicate media type"},
 		{name: "bad service code", change: func(h *Handler) { h.Routes[0].Response.ServiceErrorStatuses = map[string]int{"04": 400} }, want: "invalid ADR-32 code"},
 		{name: "bad service status", change: func(h *Handler) { h.Routes[0].Response.ServiceErrorStatuses = map[string]int{"4001": 200} }, want: "between 400 and 599"},
 		{name: "duplicate name", change: func(h *Handler) {
@@ -214,7 +224,7 @@ func TestJSONConfiguration(t *testing.T) {
     "max_request_body_bytes": 1048576,
     "max_reply_bytes": 1048576,
     "response": {
-      "mode": "raw",
+      "mode": "binary",
       "headers": ["Content-Type"],
       "content_type": "application/octet-stream",
       "service_error_statuses": {"4001": 400}
@@ -254,7 +264,7 @@ func TestCaddyfileConfiguration(t *testing.T) {
     timeout 2s
     max_request_body_bytes 1048576
     max_reply_bytes 1048576
-    response_mode raw
+    response_mode binary
     response_headers Content-Type
     response_content_type application/octet-stream
     service_error_status 4001 400
@@ -331,7 +341,8 @@ func TestCaddyfileAdapterRegistration(t *testing.T) {
       timeout 1s
       max_request_body_bytes 1024
       max_reply_bytes 1024
-      response_mode raw
+      response_mode binary
+      response_content_type application/octet-stream
       stream_mode request_reply
     }
   }
@@ -346,6 +357,27 @@ func TestCaddyfileAdapterRegistration(t *testing.T) {
 	}
 	if !strings.Contains(string(adapted), `"handler":"nats_web_gateway"`) {
 		t.Fatalf("adapted JSON does not contain gateway handler: %s", adapted)
+	}
+}
+
+func TestExampleCaddyfileAdapts(t *testing.T) {
+	t.Parallel()
+	contents, err := os.ReadFile("examples/Caddyfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := caddyconfig.GetAdapter("caddyfile")
+	adapted, warnings, err := adapter.Adapt(contents, nil)
+	if err != nil {
+		t.Fatalf("adapt example Caddyfile: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("example Caddyfile warnings: %v", warnings)
+	}
+	for _, expected := range []string{`"path":"/api/order/{id}"`, `"path":"/api/orders"`, `"path":"/assets/logo.png"`} {
+		if !strings.Contains(string(adapted), expected) {
+			t.Fatalf("adapted example is missing %s: %s", expected, adapted)
+		}
 	}
 }
 
@@ -375,7 +407,7 @@ func validRoute(name, path, subject, method string) Route {
 		MaxRequestBodyBytes: 1 << 20,
 		MaxReplyBytes:       1 << 20,
 		Response: Response{
-			Mode:                 responseModeRaw,
+			Mode:                 responseModeBinary,
 			Headers:              []string{"Content-Type"},
 			ContentType:          "application/octet-stream",
 			ServiceErrorStatuses: map[string]int{"4001": 400},

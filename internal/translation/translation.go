@@ -14,6 +14,7 @@ import (
 var (
 	ErrRequestTooLarge = errors.New("request body exceeds configured limit")
 	ErrReplyTooLarge   = errors.New("reply exceeds configured limit")
+	ErrMalformedReply  = errors.New("malformed reply")
 )
 
 type Requester interface {
@@ -40,7 +41,13 @@ func Execute(ctx context.Context, requester Requester, request Request, requestH
 	}
 	reply, err := requester.RequestMsgWithContext(ctx, message)
 	if err != nil {
+		if cause := context.Cause(ctx); cause != nil {
+			err = cause
+		}
 		return nil, fmt.Errorf("request NATS service: %w", err)
+	}
+	if reply == nil {
+		return nil, ErrMalformedReply
 	}
 	if int64(len(reply.Data)) > maxReply {
 		return nil, ErrReplyTooLarge

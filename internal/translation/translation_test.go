@@ -104,3 +104,24 @@ func TestExecutePropagatesContext(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestExecuteRejectsNilReply(t *testing.T) {
+	requester := requesterFunc(func(context.Context, *nats.Msg) (*nats.Msg, error) { return nil, nil })
+	_, err := Execute(context.Background(), requester, Request{}, nil, 1, 1)
+	if !errors.Is(err, ErrMalformedReply) {
+		t.Fatalf("error = %v, want malformed reply", err)
+	}
+}
+
+func TestExecutePreservesCancellationCause(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	wantErr := errors.New("request permission denied")
+	requester := requesterFunc(func(ctx context.Context, _ *nats.Msg) (*nats.Msg, error) {
+		cancel(wantErr)
+		return nil, ctx.Err()
+	})
+	_, err := Execute(ctx, requester, Request{}, nil, 1, 1)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want cancellation cause", err)
+	}
+}

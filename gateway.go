@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -54,15 +56,80 @@ type compiledRoute struct {
 type connectFunc func(string, ...nats.Option) (natsConnection, error)
 
 type connectionLifecycle struct {
+	connection  natsConnection
+	permissions *permissionTracker
+	stateMu     sync.RWMutex
+	ready       bool
+	stopping    bool
+	closed      chan struct{}
+	closedOnce  sync.Once
+	cleanup     sync.Once
+	drainWait   time.Duration
+	cleanupErr  error
+}
+
+var publishPermissionPattern = regexp.MustCompile(`(?i)permissions violation for publish to "([^"\s]+)"`)
+
+type permissionTracker struct {
+	mu      sync.Mutex
+	waiters map[string]map[*permissionWaiter]struct{}
+}
+
+type permissionWaiter struct {
+	cancel context.CancelCauseFunc
+}
+
+type permissionAwareRequester struct {
 	connection natsConnection
-	stateMu    sync.RWMutex
-	ready      bool
-	stopping   bool
-	closed     chan struct{}
-	closedOnce sync.Once
-	cleanup    sync.Once
-	drainWait  time.Duration
-	cleanupErr error
+	tracker    *permissionTracker
+	cancel     context.CancelCauseFunc
+}
+
+func (requester permissionAwareRequester) RequestMsgWithContext(ctx context.Context, message *nats.Msg) (*nats.Msg, error) {
+	unregister := requester.tracker.register(message.Subject, requester.cancel)
+	defer unregister()
+	return requester.connection.RequestMsgWithContext(ctx, message)
+}
+
+func newPermissionTracker() *permissionTracker {
+	return &permissionTracker{waiters: make(map[string]map[*permissionWaiter]struct{})}
+}
+
+func (tracker *permissionTracker) register(subject string, cancel context.CancelCauseFunc) func() {
+	waiter := &permissionWaiter{cancel: cancel}
+	tracker.mu.Lock()
+	if tracker.waiters[subject] == nil {
+		tracker.waiters[subject] = make(map[*permissionWaiter]struct{})
+	}
+	tracker.waiters[subject][waiter] = struct{}{}
+	tracker.mu.Unlock()
+	return func() {
+		tracker.mu.Lock()
+		delete(tracker.waiters[subject], waiter)
+		if len(tracker.waiters[subject]) == 0 {
+			delete(tracker.waiters, subject)
+		}
+		tracker.mu.Unlock()
+	}
+}
+
+func (tracker *permissionTracker) handle(err error) {
+	if !errors.Is(err, nats.ErrPermissionViolation) {
+		return
+	}
+	match := publishPermissionPattern.FindStringSubmatch(err.Error())
+	if len(match) != 2 {
+		return
+	}
+	tracker.mu.Lock()
+	waiters := make([]*permissionWaiter, 0, len(tracker.waiters[match[1]]))
+	for waiter := range tracker.waiters[match[1]] {
+		waiters = append(waiters, waiter)
+	}
+	tracker.mu.Unlock()
+	for _, waiter := range waiters {
+		waiter.cancel(nats.ErrPermissionViolation)
+	}
 }
 
 func (lifecycle *connectionLifecycle) setReady(ready bool) {
@@ -130,8 +197,9 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		}
 	}
 	lifecycle := &connectionLifecycle{
-		closed:    make(chan struct{}),
-		drainWait: time.Duration(h.NATS.DrainTimeout),
+		closed:      make(chan struct{}),
+		drainWait:   time.Duration(h.NATS.DrainTimeout),
+		permissions: newPermissionTracker(),
 	}
 	options := []nats.Option{
 		nats.Name("nats-web-gateway"),
@@ -144,6 +212,9 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		nats.ClosedHandler(func(_ *nats.Conn) {
 			lifecycle.setReady(false)
 			lifecycle.closedOnce.Do(func() { close(lifecycle.closed) })
+		}),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			lifecycle.permissions.handle(err)
 		}),
 	}
 	if username != "" {
@@ -231,32 +302,74 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 			continue
 		}
 		if err != nil {
-			http.Error(w, "invalid request parameters", http.StatusBadRequest)
+			writeGatewayError(w, http.StatusBadRequest, "invalid request parameters")
 			return nil
 		}
 		if h.lifecycle == nil || !h.Ready() {
-			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			writeGatewayError(w, http.StatusServiceUnavailable, "service unavailable")
 			return nil
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(candidate.config.Timeout))
-		reply, err := translation.Execute(ctx, h.lifecycle.connection, translation.Request{
-			Subject: subject, Header: r.Header, Body: r.Body,
-		}, candidate.config.RequestHeaders, candidate.config.MaxRequestBodyBytes, candidate.config.MaxReplyBytes)
-		cancel()
+		if candidate.config.Response.NegotiateAccept {
+			w.Header().Add("Vary", "Accept")
+		}
+		representation, err := selectRepresentation(strings.Join(r.Header.Values("Accept"), ","), candidate.config.Response)
+		if err != nil {
+			writeGatewayError(w, http.StatusNotAcceptable, "no acceptable representation")
+			return nil
+		}
+		requestHeaders := r.Header.Clone()
+		forwardHeaders := candidate.config.RequestHeaders
+		if candidate.config.Response.NegotiateAccept {
+			requestHeaders.Set("Accept", representation)
+			if !slices.Contains(forwardHeaders, "Accept") {
+				forwardHeaders = append(slices.Clone(forwardHeaders), "Accept")
+			}
+		}
+		timeoutCtx, timeoutCancel := context.WithTimeout(r.Context(), time.Duration(candidate.config.Timeout))
+		ctx, cancel := context.WithCancelCause(timeoutCtx)
+		requester := permissionAwareRequester{connection: h.lifecycle.connection, tracker: h.lifecycle.permissions, cancel: cancel}
+		reply, err := translation.Execute(ctx, requester, translation.Request{
+			Subject: subject, Header: requestHeaders, Body: r.Body,
+		}, forwardHeaders, candidate.config.MaxRequestBodyBytes, candidate.config.MaxReplyBytes)
+		cancel(nil)
+		timeoutCancel()
 		if err != nil {
 			switch {
 			case errors.Is(err, translation.ErrRequestTooLarge):
-				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				writeGatewayError(w, http.StatusRequestEntityTooLarge, "request body too large")
 			case errors.Is(err, translation.ErrReplyTooLarge):
-				http.Error(w, "upstream reply too large", http.StatusBadGateway)
+				writeGatewayError(w, http.StatusBadGateway, "upstream reply too large")
+			case errors.Is(err, translation.ErrMalformedReply):
+				writeGatewayError(w, http.StatusBadGateway, "malformed upstream reply")
+			case errors.Is(err, context.Canceled):
+				return nil
+			case errors.Is(err, context.DeadlineExceeded), errors.Is(err, nats.ErrTimeout):
+				writeGatewayError(w, http.StatusGatewayTimeout, "upstream request timed out")
+			case errors.Is(err, nats.ErrNoResponders):
+				writeGatewayError(w, http.StatusServiceUnavailable, "service unavailable")
+			case errors.Is(err, nats.ErrPermissionViolation):
+				writeGatewayError(w, http.StatusForbidden, "forbidden")
+			case errors.Is(err, nats.ErrAuthorization):
+				writeGatewayError(w, http.StatusUnauthorized, "unauthorized")
+			case errors.Is(err, nats.ErrConnectionClosed), errors.Is(err, nats.ErrDisconnected), errors.Is(err, nats.ErrConnectionReconnecting):
+				writeGatewayError(w, http.StatusServiceUnavailable, "service unavailable")
 			default:
-				http.Error(w, "upstream request failed", http.StatusBadGateway)
+				writeGatewayError(w, http.StatusInternalServerError, "internal gateway error")
 			}
+			return nil
+		}
+		status, serviceMessage, err := validateReply(reply, candidate.config.Response, representation)
+		if err != nil {
+			writeGatewayError(w, http.StatusBadGateway, "malformed upstream reply")
+			return nil
+		}
+		if serviceMessage != "" {
+			writeGatewayError(w, status, serviceMessage)
 			return nil
 		}
 		responseHeaders, err := safeResponseHeaders(reply.Header, candidate.config.Response.Headers)
 		if err != nil {
-			http.Error(w, "malformed upstream reply", http.StatusBadGateway)
+			writeGatewayError(w, http.StatusBadGateway, "malformed upstream reply")
 			return nil
 		}
 		for name, values := range responseHeaders {
@@ -264,9 +377,8 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 				w.Header().Add(name, value)
 			}
 		}
-		if w.Header().Get("Content-Type") == "" && candidate.config.Response.ContentType != "" {
-			w.Header().Set("Content-Type", candidate.config.Response.ContentType)
-		}
+		w.Header().Set("Content-Type", representation)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		_, err = w.Write(reply.Data)
 		return err
 	}
