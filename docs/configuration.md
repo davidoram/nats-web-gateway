@@ -41,9 +41,8 @@ retries automatically.
       "max_request_body_bytes": 1048576,
       "max_reply_bytes": 1048576,
       "response": {
-        "mode": "raw",
-        "headers": ["Content-Type"],
-        "content_type": "application/octet-stream",
+        "mode": "json",
+        "content_type": "application/json",
         "service_error_statuses": {"4001": 400}
       },
       "stream_mode": "request_reply"
@@ -72,9 +71,8 @@ nats_web_gateway {
     timeout 2s
     max_request_body_bytes 1048576
     max_reply_bytes 1048576
-    response_mode raw
-    response_headers Content-Type
-    response_content_type application/octet-stream
+    response_mode json
+    response_content_type application/json
     service_error_status 4001 400
     stream_mode request_reply
   }
@@ -126,8 +124,18 @@ parameter term query q ^[A-Za-z0-9_-]+$
   must be greater than zero.
 - Header names are canonical and unique. Credential, hop-by-hop, NATS protocol,
   and caller-asserted identity headers cannot be forwarded even if listed.
-- `response.mode` currently supports `raw`. A configured content type is used
-  when a safe upstream content type is not forwarded.
+- `response.mode` is explicitly `json` or `binary`. JSON replies must contain
+  one syntactically valid JSON value. Binary replies remain opaque but bounded.
+- `response.content_type` is required, canonical, parameter-free, and becomes
+  the HTTP `Content-Type`; `X-Content-Type-Options: nosniff` is always set on a
+  successful response. If the service supplies `Content-Type`, it must exactly
+  match the selected representation or the reply is rejected as malformed.
+- Optional `negotiate_accept` considers only `content_type` and the media types
+  in `representations`. It honors exact media ranges, type and global
+  wildcards, quality values, exclusions, and declaration order for ties. An
+  invalid header or no acceptable declared representation returns `406` before
+  publishing. The selected type is sent to the service as `Accept`; the gateway
+  never infers or transcodes an undeclared format.
 - ADR-32 service error codes are positive decimal application codes. They map
   only to explicitly configured HTTP statuses from 400 through 599; they are
   never treated directly as HTTP statuses.
@@ -138,7 +146,7 @@ parameter term query q ^[A-Za-z0-9_-]+$
 JSON duration values use Caddy duration strings such as `250ms` or `2s`. Byte
 limits are decimal integers in both JSON and the Caddyfile.
 
-## Request/reply example
+## Request/reply examples
 
 The runnable [Go orders service](../examples/orders-service/main.go) handles a
 lookup and a create operation. These routes expose it without allowing callers
@@ -160,9 +168,10 @@ nats_web_gateway {
     timeout 2s
     max_request_body_bytes 1024
     max_reply_bytes 65536
-    response_mode raw
-    response_headers Content-Type
+    response_mode json
     response_content_type application/json
+    response_representations application/vnd.example.order+json
+    negotiate_accept true
     stream_mode request_reply
   }
   route create_order {
@@ -173,11 +182,28 @@ nats_web_gateway {
     timeout 2s
     max_request_body_bytes 65536
     max_reply_bytes 65536
-    response_mode raw
-    response_headers Content-Type
+    response_mode json
     response_content_type application/json
     stream_mode request_reply
   }
+}
+```
+
+The runnable [Go image service](../examples/images-service/main.go) provides a
+binary PNG route. This is also included in the complete
+[example Caddyfile](../examples/Caddyfile):
+
+```caddyfile
+route logo {
+  path /assets/logo.png
+  methods GET
+  subject images.logo
+  timeout 2s
+  max_request_body_bytes 1024
+  max_reply_bytes 1048576
+  response_mode binary
+  response_content_type image/png
+  stream_mode request_reply
 }
 ```
 
@@ -200,12 +226,35 @@ Then to call the NATS service via HTTP can run:
 
 ```bash
 curl 'http://localhost:8080/api/orders/order-42?view=confirmed'
+curl -H 'Accept: application/vnd.example.order+json' \
+  'http://localhost:8080/api/orders/order-42?view=confirmed'
 curl -X POST -H 'Content-Type: application/json' \
   --data '{"id":"order-43","status":"pending"}' \
   http://localhost:8080/api/orders
+curl -H 'Accept: image/png' http://localhost:8080/assets/logo.png --output logo.png
 ```
 
-The first request publishes to `orders.get.order-42.confirmed`. Query values
+The first two requests publish to `orders.get.order-42.confirmed`. Query values
 must appear exactly once and all path/query values must match their configured
-grammar. The second forwards only `Content-Type` and `Traceparent`; credentials,
-cookies, hop-by-hop headers, and caller-asserted identity are never copied.
+grammar. The create request forwards only `Content-Type` and `Traceparent`;
+credentials, cookies, hop-by-hop headers, and caller-asserted identity are never
+copied. Enabling negotiation adds only the gateway-selected `Accept` value.
+
+Configurations from the earlier request/reply scaffold must replace
+`response_mode raw` with the explicit `json` or `binary` mode and declare
+`response_content_type`. This repository has not released a stable version yet;
+there is no runtime fallback for the old mode because ambiguous response
+handling must fail during configuration loading.
+
+## Deterministic failures
+
+Gateway errors use a bounded JSON body and never copy NATS subjects, service
+descriptions, credentials, or payloads. The initial mapping is: invalid route
+input `400`; authentication failure `401`; permission denial `403`; unacceptable
+representation `406`; oversized request `413`; malformed, oversized, or
+unmapped ADR-32 reply `502`; no responders or unavailable connectivity `503`;
+and deadline expiry `504`. A mapped ADR-32 application code uses only its
+route-declared `400`–`599` status. Client cancellation aborts the wait and does
+not manufacture a final HTTP response. Requests are published at most once and
+are never retried automatically, so timeout or cancellation after publication
+remains an ambiguous application outcome.

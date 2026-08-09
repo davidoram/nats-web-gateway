@@ -94,6 +94,21 @@ func run() error {
 	if err := service.AddEndpoint("parameterized_echo", micro.HandlerFunc(handleEcho), micro.WithEndpointSubject("demo.echo.*.*")); err != nil {
 		return fmt.Errorf("add parameterized echo endpoint: %w", err)
 	}
+	if err := service.AddEndpoint("malformed_json", micro.HandlerFunc(func(request micro.Request) {
+		if err := request.Respond([]byte(`{"incomplete":`)); err != nil {
+			log.Printf("send malformed fixture response: %v", err)
+		}
+	}), micro.WithEndpointSubject("demo.malformed")); err != nil {
+		return fmt.Errorf("add malformed endpoint: %w", err)
+	}
+	if err := service.AddEndpoint("slow", micro.HandlerFunc(func(request micro.Request) {
+		time.Sleep(500 * time.Millisecond)
+		if err := request.Respond([]byte(`{"late":true}`)); err != nil {
+			log.Printf("send slow fixture response: %v", err)
+		}
+	}), micro.WithEndpointSubject("demo.slow")); err != nil {
+		return fmt.Errorf("add slow endpoint: %w", err)
+	}
 	if err := nc.FlushTimeout(5 * time.Second); err != nil {
 		return fmt.Errorf("flush service subscriptions: %w", err)
 	}

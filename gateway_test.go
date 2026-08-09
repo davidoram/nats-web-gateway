@@ -272,6 +272,132 @@ func TestHandlerPassesRequestToNextHandler(t *testing.T) {
 	}
 }
 
+func TestHandlerMapsRequestFailures(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		requestErr error
+		wantStatus int
+		wantBody   string
+	}{
+		{name: "no responders", requestErr: nats.ErrNoResponders, wantStatus: http.StatusServiceUnavailable, wantBody: "service unavailable"},
+		{name: "timeout", requestErr: context.DeadlineExceeded, wantStatus: http.StatusGatewayTimeout, wantBody: "upstream request timed out"},
+		{name: "permission", requestErr: nats.ErrPermissionViolation, wantStatus: http.StatusForbidden, wantBody: "forbidden"},
+		{name: "authentication", requestErr: nats.ErrAuthorization, wantStatus: http.StatusUnauthorized, wantBody: "unauthorized"},
+		{name: "connectivity", requestErr: nats.ErrDisconnected, wantStatus: http.StatusServiceUnavailable, wantBody: "service unavailable"},
+		{name: "internal", requestErr: errors.New("unexpected"), wantStatus: http.StatusInternalServerError, wantBody: "internal gateway error"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := validHandler(validRoute("example", "/example", "example", http.MethodGet))
+			fake := &fakeNATSConnection{connected: true, request: func(context.Context, *nats.Msg) (*nats.Msg, error) {
+				return nil, test.requestErr
+			}}
+			handler.connect = func(_ string, options ...nats.Option) (natsConnection, error) {
+				fake.options = nats.GetDefaultOptions()
+				for _, option := range options {
+					if err := option(&fake.options); err != nil {
+						return nil, err
+					}
+				}
+				return fake, nil
+			}
+			if err := handler.Provision(caddy.Context{}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = handler.Cleanup() })
+			recorder := httptest.NewRecorder()
+			err := handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/example", nil), caddyhttp.HandlerFunc(func(http.ResponseWriter, *http.Request) error {
+				t.Fatal("next handler called")
+				return nil
+			}))
+			if err != nil || recorder.Code != test.wantStatus || !strings.Contains(recorder.Body.String(), test.wantBody) {
+				t.Fatalf("ServeHTTP() = error %v, status %d, body %q", err, recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandlerCancellationWritesNoResponse(t *testing.T) {
+	handler := validHandler(validRoute("example", "/example", "example", http.MethodGet))
+	fake := &fakeNATSConnection{connected: true, request: func(ctx context.Context, _ *nats.Msg) (*nats.Msg, error) {
+		return nil, ctx.Err()
+	}}
+	handler.connect = func(_ string, options ...nats.Option) (natsConnection, error) {
+		fake.options = nats.GetDefaultOptions()
+		for _, option := range options {
+			if err := option(&fake.options); err != nil {
+				return nil, err
+			}
+		}
+		return fake, nil
+	}
+	if err := handler.Provision(caddy.Context{}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = handler.Cleanup() })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/example", nil).WithContext(ctx)
+	if err := handler.ServeHTTP(recorder, request, caddyhttp.HandlerFunc(func(http.ResponseWriter, *http.Request) error { return nil })); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Body.Len() != 0 || len(recorder.Header()) != 0 {
+		t.Fatalf("canceled response headers/body = %v/%q", recorder.Header(), recorder.Body.String())
+	}
+}
+
+func TestHandlerNegotiatesOnlyDeclaredRepresentations(t *testing.T) {
+	route := validRoute("image", "/image", "image", http.MethodGet)
+	route.Response.ContentType = "image/png"
+	route.Response.Representations = []string{"image/webp"}
+	route.Response.NegotiateAccept = true
+	handler := validHandler(route)
+	var requests atomic.Int32
+	fake := &fakeNATSConnection{connected: true, request: func(_ context.Context, message *nats.Msg) (*nats.Msg, error) {
+		requests.Add(1)
+		if got := message.Header.Get("Accept"); got != "image/webp" {
+			t.Fatalf("forwarded Accept = %q, want selected representation", got)
+		}
+		return &nats.Msg{Header: nats.Header{"Content-Type": {"image/webp"}}, Data: []byte("webp")}, nil
+	}}
+	handler.connect = func(_ string, options ...nats.Option) (natsConnection, error) {
+		fake.options = nats.GetDefaultOptions()
+		for _, option := range options {
+			if err := option(&fake.options); err != nil {
+				return nil, err
+			}
+		}
+		return fake, nil
+	}
+	if err := handler.Provision(caddy.Context{}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = handler.Cleanup() })
+
+	request := httptest.NewRequest(http.MethodGet, "/image", nil)
+	request.Header.Add("Accept", "image/png;q=0.2")
+	request.Header.Add("Accept", "image/webp;q=0.9")
+	recorder := httptest.NewRecorder()
+	if err := handler.ServeHTTP(recorder, request, caddyhttp.HandlerFunc(func(http.ResponseWriter, *http.Request) error { return nil })); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "image/webp" || recorder.Header().Get("Vary") != "Accept" || recorder.Body.String() != "webp" {
+		t.Fatalf("negotiated response = %d %v %q", recorder.Code, recorder.Header(), recorder.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/image", nil)
+	request.Header.Set("Accept", "text/html")
+	recorder = httptest.NewRecorder()
+	if err := handler.ServeHTTP(recorder, request, caddyhttp.HandlerFunc(func(http.ResponseWriter, *http.Request) error { return nil })); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusNotAcceptable || requests.Load() != 1 {
+		t.Fatalf("unacceptable response status/requests = %d/%d", recorder.Code, requests.Load())
+	}
+}
+
 func TestHandlerExecutesMatchingRequestReplyRoute(t *testing.T) {
 	server := natstest.RunRandClientPortServer()
 	t.Cleanup(server.Shutdown)

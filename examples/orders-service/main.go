@@ -35,7 +35,7 @@ func main() {
 			return
 		}
 		reply := nats.NewMsg(message.Reply)
-		reply.Header.Set("Content-Type", "application/json")
+		reply.Header.Set("Content-Type", selectedContentType(message))
 		reply.Data = payload
 		if err := nc.PublishMsg(reply); err != nil {
 			log.Printf("publish reply: %v", err)
@@ -49,7 +49,7 @@ func main() {
 		// The gateway already enforced the configured body limit. Services must
 		// still validate their domain payloads and permissions normally.
 		reply := nats.NewMsg(message.Reply)
-		reply.Header.Set("Content-Type", "application/json")
+		reply.Header.Set("Content-Type", selectedContentType(message))
 		reply.Data = message.Data
 		if err := nc.PublishMsg(reply); err != nil {
 			log.Printf("publish reply: %v", err)
@@ -64,4 +64,13 @@ func main() {
 	}
 	log.Print("orders service listening on orders.get.*.* and orders.create")
 	select {}
+}
+
+func selectedContentType(message *nats.Msg) string {
+	switch message.Header.Get("Accept") {
+	case "application/vnd.example.order+json":
+		return "application/vnd.example.order+json"
+	default:
+		return "application/json"
+	}
 }

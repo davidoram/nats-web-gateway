@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -231,32 +232,71 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 			continue
 		}
 		if err != nil {
-			http.Error(w, "invalid request parameters", http.StatusBadRequest)
+			writeGatewayError(w, http.StatusBadRequest, "invalid request parameters")
 			return nil
 		}
 		if h.lifecycle == nil || !h.Ready() {
-			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			writeGatewayError(w, http.StatusServiceUnavailable, "service unavailable")
 			return nil
+		}
+		if candidate.config.Response.NegotiateAccept {
+			w.Header().Add("Vary", "Accept")
+		}
+		representation, err := selectRepresentation(strings.Join(r.Header.Values("Accept"), ","), candidate.config.Response)
+		if err != nil {
+			writeGatewayError(w, http.StatusNotAcceptable, "no acceptable representation")
+			return nil
+		}
+		requestHeaders := r.Header.Clone()
+		forwardHeaders := candidate.config.RequestHeaders
+		if candidate.config.Response.NegotiateAccept {
+			requestHeaders.Set("Accept", representation)
+			if !slices.Contains(forwardHeaders, "Accept") {
+				forwardHeaders = append(slices.Clone(forwardHeaders), "Accept")
+			}
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(candidate.config.Timeout))
 		reply, err := translation.Execute(ctx, h.lifecycle.connection, translation.Request{
-			Subject: subject, Header: r.Header, Body: r.Body,
-		}, candidate.config.RequestHeaders, candidate.config.MaxRequestBodyBytes, candidate.config.MaxReplyBytes)
+			Subject: subject, Header: requestHeaders, Body: r.Body,
+		}, forwardHeaders, candidate.config.MaxRequestBodyBytes, candidate.config.MaxReplyBytes)
 		cancel()
 		if err != nil {
 			switch {
 			case errors.Is(err, translation.ErrRequestTooLarge):
-				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				writeGatewayError(w, http.StatusRequestEntityTooLarge, "request body too large")
 			case errors.Is(err, translation.ErrReplyTooLarge):
-				http.Error(w, "upstream reply too large", http.StatusBadGateway)
+				writeGatewayError(w, http.StatusBadGateway, "upstream reply too large")
+			case errors.Is(err, translation.ErrMalformedReply):
+				writeGatewayError(w, http.StatusBadGateway, "malformed upstream reply")
+			case errors.Is(err, context.Canceled):
+				return nil
+			case errors.Is(err, context.DeadlineExceeded), errors.Is(err, nats.ErrTimeout):
+				writeGatewayError(w, http.StatusGatewayTimeout, "upstream request timed out")
+			case errors.Is(err, nats.ErrNoResponders):
+				writeGatewayError(w, http.StatusServiceUnavailable, "service unavailable")
+			case errors.Is(err, nats.ErrPermissionViolation):
+				writeGatewayError(w, http.StatusForbidden, "forbidden")
+			case errors.Is(err, nats.ErrAuthorization):
+				writeGatewayError(w, http.StatusUnauthorized, "unauthorized")
+			case errors.Is(err, nats.ErrConnectionClosed), errors.Is(err, nats.ErrDisconnected), errors.Is(err, nats.ErrConnectionReconnecting):
+				writeGatewayError(w, http.StatusServiceUnavailable, "service unavailable")
 			default:
-				http.Error(w, "upstream request failed", http.StatusBadGateway)
+				writeGatewayError(w, http.StatusInternalServerError, "internal gateway error")
 			}
+			return nil
+		}
+		status, serviceMessage, err := validateReply(reply, candidate.config.Response, representation)
+		if err != nil {
+			writeGatewayError(w, http.StatusBadGateway, "malformed upstream reply")
+			return nil
+		}
+		if serviceMessage != "" {
+			writeGatewayError(w, status, serviceMessage)
 			return nil
 		}
 		responseHeaders, err := safeResponseHeaders(reply.Header, candidate.config.Response.Headers)
 		if err != nil {
-			http.Error(w, "malformed upstream reply", http.StatusBadGateway)
+			writeGatewayError(w, http.StatusBadGateway, "malformed upstream reply")
 			return nil
 		}
 		for name, values := range responseHeaders {
@@ -264,9 +304,8 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 				w.Header().Add(name, value)
 			}
 		}
-		if w.Header().Get("Content-Type") == "" && candidate.config.Response.ContentType != "" {
-			w.Header().Set("Content-Type", candidate.config.Response.ContentType)
-		}
+		w.Header().Set("Content-Type", representation)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		_, err = w.Write(reply.Data)
 		return err
 	}
