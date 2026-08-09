@@ -53,6 +53,16 @@
                     "response": {"mode": "binary", "content_type": "application/octet-stream"},
                     "stream_mode": "request_reply"
                   }, {
+                    "name": "permission_fixture",
+                    "path": "/errors/permission",
+                    "methods": ["GET"],
+                    "subject": "denied.subject",
+                    "timeout": "2s",
+                    "max_request_body_bytes": 1024,
+                    "max_reply_bytes": 1024,
+                    "response": {"mode": "binary", "content_type": "application/octet-stream"},
+                    "stream_mode": "request_reply"
+                  }, {
                     "name": "malformed_fixture",
                     "path": "/errors/malformed",
                     "methods": ["GET"],

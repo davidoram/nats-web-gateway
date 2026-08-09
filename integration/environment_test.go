@@ -99,6 +99,7 @@ func TestLocalEnvironment(t *testing.T) {
 		}{
 			{name: "mapped ADR-32 error", method: http.MethodPost, path: "/echo/order-42?view=summary", body: "error", wantStatus: http.StatusBadRequest},
 			{name: "no responders", method: http.MethodGet, path: "/errors/no-responders", wantStatus: http.StatusServiceUnavailable},
+			{name: "publish permission", method: http.MethodGet, path: "/errors/permission", wantStatus: http.StatusForbidden},
 			{name: "malformed JSON", method: http.MethodGet, path: "/errors/malformed", wantStatus: http.StatusBadGateway},
 			{name: "deadline", method: http.MethodGet, path: "/errors/timeout", wantStatus: http.StatusGatewayTimeout},
 		}

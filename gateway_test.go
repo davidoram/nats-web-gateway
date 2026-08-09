@@ -3,6 +3,7 @@ package natswebgateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -315,6 +316,36 @@ func TestHandlerMapsRequestFailures(t *testing.T) {
 				t.Fatalf("ServeHTTP() = error %v, status %d, body %q", err, recorder.Code, recorder.Body.String())
 			}
 		})
+	}
+}
+
+func TestHandlerMapsAsynchronousPublishPermissionFailure(t *testing.T) {
+	handler := validHandler(validRoute("example", "/example", "denied.subject", http.MethodGet))
+	fake := &fakeNATSConnection{connected: true}
+	fake.request = func(ctx context.Context, _ *nats.Msg) (*nats.Msg, error) {
+		fake.options.AsyncErrorCB(nil, nil, fmt.Errorf("%w: Permissions Violation for Publish to \"denied.subject\"", nats.ErrPermissionViolation))
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	handler.connect = func(_ string, options ...nats.Option) (natsConnection, error) {
+		fake.options = nats.GetDefaultOptions()
+		for _, option := range options {
+			if err := option(&fake.options); err != nil {
+				return nil, err
+			}
+		}
+		return fake, nil
+	}
+	if err := handler.Provision(caddy.Context{}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = handler.Cleanup() })
+	recorder := httptest.NewRecorder()
+	if err := handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/example", nil), caddyhttp.HandlerFunc(func(http.ResponseWriter, *http.Request) error { return nil })); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusForbidden || !strings.Contains(recorder.Body.String(), "forbidden") {
+		t.Fatalf("permission response = %d %q", recorder.Code, recorder.Body.String())
 	}
 }
 

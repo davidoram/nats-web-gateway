@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -55,15 +56,80 @@ type compiledRoute struct {
 type connectFunc func(string, ...nats.Option) (natsConnection, error)
 
 type connectionLifecycle struct {
+	connection  natsConnection
+	permissions *permissionTracker
+	stateMu     sync.RWMutex
+	ready       bool
+	stopping    bool
+	closed      chan struct{}
+	closedOnce  sync.Once
+	cleanup     sync.Once
+	drainWait   time.Duration
+	cleanupErr  error
+}
+
+var publishPermissionPattern = regexp.MustCompile(`(?i)permissions violation for publish to "([^"\s]+)"`)
+
+type permissionTracker struct {
+	mu      sync.Mutex
+	waiters map[string]map[*permissionWaiter]struct{}
+}
+
+type permissionWaiter struct {
+	cancel context.CancelCauseFunc
+}
+
+type permissionAwareRequester struct {
 	connection natsConnection
-	stateMu    sync.RWMutex
-	ready      bool
-	stopping   bool
-	closed     chan struct{}
-	closedOnce sync.Once
-	cleanup    sync.Once
-	drainWait  time.Duration
-	cleanupErr error
+	tracker    *permissionTracker
+	cancel     context.CancelCauseFunc
+}
+
+func (requester permissionAwareRequester) RequestMsgWithContext(ctx context.Context, message *nats.Msg) (*nats.Msg, error) {
+	unregister := requester.tracker.register(message.Subject, requester.cancel)
+	defer unregister()
+	return requester.connection.RequestMsgWithContext(ctx, message)
+}
+
+func newPermissionTracker() *permissionTracker {
+	return &permissionTracker{waiters: make(map[string]map[*permissionWaiter]struct{})}
+}
+
+func (tracker *permissionTracker) register(subject string, cancel context.CancelCauseFunc) func() {
+	waiter := &permissionWaiter{cancel: cancel}
+	tracker.mu.Lock()
+	if tracker.waiters[subject] == nil {
+		tracker.waiters[subject] = make(map[*permissionWaiter]struct{})
+	}
+	tracker.waiters[subject][waiter] = struct{}{}
+	tracker.mu.Unlock()
+	return func() {
+		tracker.mu.Lock()
+		delete(tracker.waiters[subject], waiter)
+		if len(tracker.waiters[subject]) == 0 {
+			delete(tracker.waiters, subject)
+		}
+		tracker.mu.Unlock()
+	}
+}
+
+func (tracker *permissionTracker) handle(err error) {
+	if !errors.Is(err, nats.ErrPermissionViolation) {
+		return
+	}
+	match := publishPermissionPattern.FindStringSubmatch(err.Error())
+	if len(match) != 2 {
+		return
+	}
+	tracker.mu.Lock()
+	waiters := make([]*permissionWaiter, 0, len(tracker.waiters[match[1]]))
+	for waiter := range tracker.waiters[match[1]] {
+		waiters = append(waiters, waiter)
+	}
+	tracker.mu.Unlock()
+	for _, waiter := range waiters {
+		waiter.cancel(nats.ErrPermissionViolation)
+	}
 }
 
 func (lifecycle *connectionLifecycle) setReady(ready bool) {
@@ -131,8 +197,9 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		}
 	}
 	lifecycle := &connectionLifecycle{
-		closed:    make(chan struct{}),
-		drainWait: time.Duration(h.NATS.DrainTimeout),
+		closed:      make(chan struct{}),
+		drainWait:   time.Duration(h.NATS.DrainTimeout),
+		permissions: newPermissionTracker(),
 	}
 	options := []nats.Option{
 		nats.Name("nats-web-gateway"),
@@ -145,6 +212,9 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		nats.ClosedHandler(func(_ *nats.Conn) {
 			lifecycle.setReady(false)
 			lifecycle.closedOnce.Do(func() { close(lifecycle.closed) })
+		}),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+			lifecycle.permissions.handle(err)
 		}),
 	}
 	if username != "" {
@@ -255,11 +325,14 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 				forwardHeaders = append(slices.Clone(forwardHeaders), "Accept")
 			}
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(candidate.config.Timeout))
-		reply, err := translation.Execute(ctx, h.lifecycle.connection, translation.Request{
+		timeoutCtx, timeoutCancel := context.WithTimeout(r.Context(), time.Duration(candidate.config.Timeout))
+		ctx, cancel := context.WithCancelCause(timeoutCtx)
+		requester := permissionAwareRequester{connection: h.lifecycle.connection, tracker: h.lifecycle.permissions, cancel: cancel}
+		reply, err := translation.Execute(ctx, requester, translation.Request{
 			Subject: subject, Header: requestHeaders, Body: r.Body,
 		}, forwardHeaders, candidate.config.MaxRequestBodyBytes, candidate.config.MaxReplyBytes)
-		cancel()
+		cancel(nil)
+		timeoutCancel()
 		if err != nil {
 			switch {
 			case errors.Is(err, translation.ErrRequestTooLarge):
