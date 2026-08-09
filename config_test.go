@@ -2,6 +2,7 @@ package natswebgateway
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -356,6 +357,27 @@ func TestCaddyfileAdapterRegistration(t *testing.T) {
 	}
 	if !strings.Contains(string(adapted), `"handler":"nats_web_gateway"`) {
 		t.Fatalf("adapted JSON does not contain gateway handler: %s", adapted)
+	}
+}
+
+func TestExampleCaddyfileAdapts(t *testing.T) {
+	t.Parallel()
+	contents, err := os.ReadFile("examples/Caddyfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := caddyconfig.GetAdapter("caddyfile")
+	adapted, warnings, err := adapter.Adapt(contents, nil)
+	if err != nil {
+		t.Fatalf("adapt example Caddyfile: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("example Caddyfile warnings: %v", warnings)
+	}
+	for _, expected := range []string{`"path":"/api/order/{id}"`, `"path":"/api/orders"`, `"path":"/assets/logo.png"`} {
+		if !strings.Contains(string(adapted), expected) {
+			t.Fatalf("adapted example is missing %s: %s", expected, adapted)
+		}
 	}
 }
 

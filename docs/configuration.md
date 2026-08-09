@@ -148,9 +148,11 @@ limits are decimal integers in both JSON and the Caddyfile.
 
 ## Request/reply examples
 
-The runnable [Go orders service](../examples/orders-service/main.go) handles a
-lookup and a create operation. These routes expose it without allowing callers
-to choose arbitrary NATS subjects:
+The runnable [Go orders service](../examples/orders-service/main.go) stores
+orders in a concurrency-safe in-memory map. `POST /api/orders` creates or
+replaces the order with the supplied `id` and `status`; `GET /api/order/{id}`
+returns its current status. These routes expose it without allowing callers to
+choose arbitrary NATS subjects:
 
 ```caddyfile
 nats_web_gateway {
@@ -160,11 +162,10 @@ nats_web_gateway {
   max_reconnects -1
   drain_timeout 30s
   route get_order {
-    path /api/orders/{id}
+    path /api/order/{id}
     methods GET
-    subject orders.get.{id}.{view}
+    subject orders.get.{id}
     parameter id path id ^[A-Za-z0-9_-]+$
-    parameter view query view ^[A-Za-z0-9_-]+$
     timeout 2s
     max_request_body_bytes 1024
     max_reply_bytes 65536
@@ -172,9 +173,10 @@ nats_web_gateway {
     response_content_type application/json
     response_representations application/vnd.example.order+json
     negotiate_accept true
+    service_error_status 4041 404
     stream_mode request_reply
   }
-  route create_order {
+  route create_or_replace_order {
     path /api/orders
     methods POST
     subject orders.create
@@ -184,6 +186,7 @@ nats_web_gateway {
     max_reply_bytes 65536
     response_mode json
     response_content_type application/json
+    service_error_status 4001 400
     stream_mode request_reply
   }
 }
@@ -225,20 +228,28 @@ Docker users can replace `podman-compose` with `docker compose`.
 Then to call the NATS service via HTTP can run:
 
 ```bash
-curl 'http://localhost:8080/api/orders/order-42?view=confirmed'
-curl -H 'Accept: application/vnd.example.order+json' \
-  'http://localhost:8080/api/orders/order-42?view=confirmed'
 curl -X POST -H 'Content-Type: application/json' \
-  --data '{"id":"order-43","status":"pending"}' \
+  --data '{"id":"order-42","status":"pending"}' \
   http://localhost:8080/api/orders
+curl 'http://localhost:8080/api/order/order-42'
+curl -H 'Accept: application/vnd.example.order+json' \
+  'http://localhost:8080/api/order/order-42'
+curl -X POST -H 'Content-Type: application/json' \
+  --data '{"id":"order-42","status":"shipped"}' \
+  http://localhost:8080/api/orders
+curl 'http://localhost:8080/api/order/order-42'
 curl -H 'Accept: image/png' http://localhost:8080/assets/logo.png --output logo.png
 ```
 
-The first two requests publish to `orders.get.order-42.confirmed`. Query values
-must appear exactly once and all path/query values must match their configured
-grammar. The create request forwards only `Content-Type` and `Traceparent`;
+The POST requests publish to `orders.create`; the second overwrites the first
+order. The GET requests publish to `orders.get.order-42`; they return
+`{"status":"pending"}` before the overwrite and `{"status":"shipped"}` after
+it. Unknown IDs return the configured `404`, while malformed order payloads
+return `400`. Create requests forward only `Content-Type` and `Traceparent`;
 credentials, cookies, hop-by-hop headers, and caller-asserted identity are never
-copied. Enabling negotiation adds only the gateway-selected `Accept` value.
+copied. Enabling negotiation adds only the gateway-selected `Accept` value. The
+map is intentionally process-local example state and is empty after a service
+restart.
 
 Configurations from the earlier request/reply scaffold must replace
 `response_mode raw` with the explicit `json` or `binary` mode and declare

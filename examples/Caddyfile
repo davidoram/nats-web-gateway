@@ -7,11 +7,10 @@
 		drain_timeout 30s
 
 		route get_order {
-			path /api/orders/{id}
+			path /api/order/{id}
 			methods GET
-			subject orders.get.{id}.{view}
+			subject orders.get.{id}
 			parameter id path id ^[A-Za-z0-9_-]+$
-			parameter view query view ^[A-Za-z0-9_-]+$
 			timeout 2s
 			max_request_body_bytes 1024
 			max_reply_bytes 65536
@@ -19,6 +18,21 @@
 			response_content_type application/json
 			response_representations application/vnd.example.order+json
 			negotiate_accept true
+			service_error_status 4041 404
+			stream_mode request_reply
+		}
+
+		route create_or_replace_order {
+			path /api/orders
+			methods POST
+			subject orders.create
+			request_headers Content-Type Traceparent
+			timeout 2s
+			max_request_body_bytes 65536
+			max_reply_bytes 65536
+			response_mode json
+			response_content_type application/json
+			service_error_status 4001 400
 			stream_mode request_reply
 		}
 

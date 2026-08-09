@@ -28,8 +28,9 @@ secret source; never embed production credentials in checked-in configuration.
 
 ## Request/reply examples
 
-The [Go orders service](examples/orders-service/main.go) demonstrates validated
-JSON replies and optional `Accept` negotiation. The
+The [Go orders service](examples/orders-service/main.go) demonstrates a
+concurrency-safe in-memory create-or-replace and lookup API, validated JSON
+replies, deterministic domain errors, and optional `Accept` negotiation. The
 [Go image service](examples/images-service/main.go) returns a bounded PNG with
 a fixed safe content type. Their matching [Caddyfile](examples/Caddyfile), JSON
 configuration, and curl examples are in the
