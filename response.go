@@ -21,8 +21,10 @@ var qualityPattern = regexp.MustCompile(`^(?:0(?:\.[0-9]{0,3})?|1(?:\.0{0,3})?)$
 
 type acceptRange struct {
 	typeName, subtype string
+	parameters        map[string]string
 	quality           float64
 	specificity       int
+	parameterCount    int
 	order             int
 }
 
@@ -40,15 +42,17 @@ func selectRepresentation(header string, response Response) (string, error) {
 	}
 	bestIndex, bestQuality := -1, -1.0
 	for index, representation := range declared {
-		mediaType, _, _ := mime.ParseMediaType(representation)
+		mediaType, parameters, _ := mime.ParseMediaType(representation)
 		parts := strings.SplitN(mediaType, "/", 2)
-		quality, specificity, rangeOrder := -1.0, -1, len(ranges)
+		quality, specificity, parameterCount, rangeOrder := -1.0, -1, -1, len(ranges)
 		for _, candidate := range ranges {
-			if !candidate.matches(parts[0], parts[1]) {
+			if !candidate.matches(parts[0], parts[1], parameters) {
 				continue
 			}
-			if candidate.specificity > specificity || candidate.specificity == specificity && candidate.order < rangeOrder {
-				quality, specificity, rangeOrder = candidate.quality, candidate.specificity, candidate.order
+			if candidate.specificity > specificity ||
+				candidate.specificity == specificity && candidate.parameterCount > parameterCount ||
+				candidate.specificity == specificity && candidate.parameterCount == parameterCount && candidate.order < rangeOrder {
+				quality, specificity, parameterCount, rangeOrder = candidate.quality, candidate.specificity, candidate.parameterCount, candidate.order
 			}
 		}
 		if quality > 0 && quality > bestQuality {
@@ -68,27 +72,41 @@ func parseAccept(value string) ([]acceptRange, error) {
 	}
 	ranges := make([]acceptRange, 0, len(items))
 	for index, item := range items {
-		mediaRange, parameters, parseErr := mime.ParseMediaType(strings.TrimSpace(item))
+		trimmed := strings.TrimSpace(item)
+		segments, splitErr := splitHeaderValue(trimmed, ';')
+		if splitErr != nil {
+			return nil, splitErr
+		}
+		quality, mediaEnd := 1.0, len(segments)
+		for parameterIndex, segment := range segments[1:] {
+			name, rawValue, found := strings.Cut(segment, "=")
+			name = strings.ToLower(strings.TrimSpace(name))
+			if name != "q" {
+				continue
+			}
+			if !found || !qualityPattern.MatchString(strings.TrimSpace(rawValue)) {
+				return nil, errors.New("invalid quality value")
+			}
+			var parseErr error
+			quality, parseErr = strconv.ParseFloat(strings.TrimSpace(rawValue), 64)
+			if parseErr != nil {
+				return nil, errors.New("invalid quality value")
+			}
+			mediaEnd = parameterIndex + 1
+			for _, extension := range segments[mediaEnd+1:] {
+				if err := validateAcceptExtension(extension); err != nil {
+					return nil, err
+				}
+			}
+			break
+		}
+		mediaRange, mediaParameters, parseErr := mime.ParseMediaType(strings.Join(segments[:mediaEnd], ";"))
 		if parseErr != nil {
 			return nil, parseErr
 		}
 		parts := strings.SplitN(mediaRange, "/", 2)
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" || parts[0] == "*" && parts[1] != "*" {
 			return nil, errors.New("invalid media range")
-		}
-		quality := 1.0
-		if rawQuality, exists := parameters["q"]; exists {
-			delete(parameters, "q")
-			if !qualityPattern.MatchString(rawQuality) {
-				return nil, errors.New("invalid quality value")
-			}
-			quality, parseErr = strconv.ParseFloat(rawQuality, 64)
-			if parseErr != nil || quality < 0 || quality > 1 {
-				return nil, errors.New("invalid quality value")
-			}
-		}
-		if len(parameters) != 0 {
-			return nil, errors.New("media-range parameters are not supported")
 		}
 		specificity := 2
 		if parts[1] == "*" {
@@ -97,12 +115,37 @@ func parseAccept(value string) ([]acceptRange, error) {
 		if parts[0] == "*" {
 			specificity = 0
 		}
-		ranges = append(ranges, acceptRange{typeName: parts[0], subtype: parts[1], quality: quality, specificity: specificity, order: index})
+		ranges = append(ranges, acceptRange{
+			typeName: parts[0], subtype: parts[1], parameters: mediaParameters,
+			quality: quality, specificity: specificity, parameterCount: len(mediaParameters), order: index,
+		})
 	}
 	return ranges, nil
 }
 
+func validateAcceptExtension(value string) error {
+	name, rawValue, hasValue := strings.Cut(value, "=")
+	name = strings.TrimSpace(name)
+	if !httpguts.ValidHeaderFieldName(name) || strings.EqualFold(name, "q") {
+		return errors.New("invalid Accept extension")
+	}
+	if !hasValue {
+		return nil
+	}
+	if strings.TrimSpace(rawValue) == "" {
+		return errors.New("invalid Accept extension")
+	}
+	if _, _, err := mime.ParseMediaType("application/octet-stream;" + value); err != nil {
+		return errors.New("invalid Accept extension")
+	}
+	return nil
+}
+
 func splitAccept(value string) ([]string, error) {
+	return splitHeaderValue(value, ',')
+}
+
+func splitHeaderValue(value string, delimiter rune) ([]string, error) {
 	var result []string
 	start, quoted, escaped := 0, false, false
 	for index, character := range value {
@@ -113,7 +156,7 @@ func splitAccept(value string) ([]string, error) {
 			escaped = true
 		case character == '"':
 			quoted = !quoted
-		case character == ',' && !quoted:
+		case character == delimiter && !quoted:
 			if strings.TrimSpace(value[start:index]) == "" {
 				return nil, errors.New("empty media range")
 			}
@@ -127,9 +170,17 @@ func splitAccept(value string) ([]string, error) {
 	return append(result, value[start:]), nil
 }
 
-func (mediaRange acceptRange) matches(typeName, subtype string) bool {
-	return (mediaRange.typeName == "*" || mediaRange.typeName == typeName) &&
-		(mediaRange.subtype == "*" || mediaRange.subtype == subtype)
+func (mediaRange acceptRange) matches(typeName, subtype string, parameters map[string]string) bool {
+	if (mediaRange.typeName != "*" && mediaRange.typeName != typeName) ||
+		(mediaRange.subtype != "*" && mediaRange.subtype != subtype) {
+		return false
+	}
+	for name, value := range mediaRange.parameters {
+		if parameters[name] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func validateReply(reply *nats.Msg, response Response, representation string) (int, string, error) {

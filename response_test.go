@@ -27,6 +27,11 @@ func TestSelectRepresentation(t *testing.T) {
 		{name: "global wildcard", accept: "*/*", want: "image/png"},
 		{name: "specific exclusion overrides wildcard", accept: "image/*;q=0.8, image/png;q=0", want: "image/webp"},
 		{name: "declaration breaks quality tie", accept: "image/png, image/webp", want: "image/png"},
+		{name: "parameterized non-match uses fallback", accept: "image/png;profile=v1, image/png;q=0.5", want: "image/png"},
+		{name: "quoted parameter non-match uses fallback", accept: `image/png;profile="v1;draft", image/png;q=0.5`, want: "image/png"},
+		{name: "accept extension after quality does not constrain match", accept: `image/png;q=0.5;extension="v1;draft"`, want: "image/png"},
+		{name: "valueless accept extension after quality", accept: "image/png;q=0.5;extension", want: "image/png"},
+		{name: "parameterized range alone does not match", accept: "image/png;profile=v1", wantError: true},
 		{name: "undeclared", accept: "text/html", wantError: true},
 		{name: "all excluded", accept: "*/*;q=0", wantError: true},
 		{name: "malformed quality", accept: "image/png;q=2", wantError: true},
@@ -68,6 +73,22 @@ func TestValidateReply(t *testing.T) {
 				t.Fatalf("validateReply() = %d, %v; want %d, error=%t", status, err, test.wantStatus, test.wantError)
 			}
 		})
+	}
+}
+
+func TestParseAcceptRetainsMediaRangeParameters(t *testing.T) {
+	ranges, err := parseAccept(`application/json;profile="v1";q=0.8;extension="ignored"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ranges) != 1 || !ranges[0].matches("application", "json", map[string]string{"profile": "v1"}) {
+		t.Fatalf("parameterized range = %+v", ranges)
+	}
+	if ranges[0].matches("application", "json", nil) {
+		t.Fatal("parameterized range matched representation without its media parameter")
+	}
+	if ranges[0].quality != 0.8 {
+		t.Fatalf("quality = %v, want 0.8", ranges[0].quality)
 	}
 }
 
