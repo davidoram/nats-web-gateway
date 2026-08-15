@@ -20,6 +20,9 @@ decisions, [docs/adr](docs/adr) for accepted architecture decisions, and the
 Declared JSON and Caddyfile route schemas, mapping options, limits, and
 fail-closed validation rules are documented in
 [docs/configuration.md](docs/configuration.md).
+Supported HTTP-to-NATS authentication mappings and their proof-of-possession
+and termination semantics are documented in the
+[credential adapter guide](docs/credential-adapters.md).
 
 The gateway provisions an instance-owned, least-privilege NATS connection,
 tracks reconnect readiness, and drains deterministically across overlapping
