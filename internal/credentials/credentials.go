@@ -104,7 +104,17 @@ func (adapter Adapter) Options(request *http.Request) ([]nats.Option, error) {
 		if !ok || proof.JWT == nil || proof.Sign == nil {
 			return nil, ErrProofUnavailable
 		}
-		return []nats.Option{nats.UserJWT(proof.JWT, proof.Sign)}, nil
+		boundedJWT := func() (string, error) {
+			jwt, err := proof.JWT()
+			if err != nil {
+				return "", ErrProofUnavailable
+			}
+			if !validTextCredential(jwt, limit) {
+				return "", ErrCredentialMalformed
+			}
+			return jwt, nil
+		}
+		return []nats.Option{nats.UserJWT(boundedJWT, proof.Sign)}, nil
 	case MechanismTLS:
 		if len(request.Header.Values("Authorization")) != 0 || hasNKeyProof(request.Context()) || hasNKeyJWTProof(request.Context()) {
 			return nil, ErrCredentialAmbiguous
@@ -223,7 +233,7 @@ func validBasicCredential(value string, limit int) bool {
 }
 
 func validTextCredential(value string, limit int) bool {
-	if value == "" || len(value) > limit || strings.TrimSpace(value) != value {
+	if value == "" || len(value) > limit || !utf8.ValidString(value) || strings.TrimSpace(value) != value {
 		return false
 	}
 	for _, character := range value {

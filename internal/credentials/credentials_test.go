@@ -59,6 +59,56 @@ func TestNKeyJWTOptionsPreserveNonceSigning(t *testing.T) {
 	}
 }
 
+func TestNKeyJWTCallbackOutputFailsClosed(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		jwt  string
+	}{
+		{name: "empty", jwt: ""},
+		{name: "oversized", jwt: "12345"},
+		{name: "invalid UTF-8", jwt: string([]byte{0xff})},
+		{name: "whitespace", jwt: "two tokens"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			request := httptest.NewRequest(http.MethodGet, "https://example.test/", nil)
+			proof := NKeyJWTProof{
+				JWT:  func() (string, error) { return test.jwt, nil },
+				Sign: func([]byte) ([]byte, error) { return nil, nil },
+			}
+			request = request.WithContext(WithNKeyJWTProof(request.Context(), proof))
+			adapterOptions, err := (Adapter{Mechanism: MechanismNKeyJWT, MaxCredentialBytes: 4}).Options(request)
+			if err != nil {
+				t.Fatalf("Options() error = %v", err)
+			}
+			options := nats.GetDefaultOptions()
+			err = adapterOptions[0](&options)
+			if !errors.Is(err, ErrCredentialMalformed) {
+				t.Fatalf("apply NATS option error = %v, want malformed credential", err)
+			}
+			if test.jwt != "" && strings.Contains(err.Error(), test.jwt) {
+				t.Fatal("error disclosed JWT material")
+			}
+		})
+	}
+}
+
+func TestBearerTokenRejectsInvalidUTF8(t *testing.T) {
+	t.Parallel()
+	request := httptest.NewRequest(http.MethodGet, "https://example.test/", nil)
+	credential := string([]byte{0xff})
+	request.Header["Authorization"] = []string{"Bearer " + credential}
+	_, err := (Adapter{Mechanism: MechanismBearerToken}).Options(request)
+	if !errors.Is(err, ErrCredentialMalformed) {
+		t.Fatalf("Options() error = %v, want malformed credential", err)
+	}
+	if strings.Contains(err.Error(), credential) {
+		t.Fatal("error disclosed bearer credential material")
+	}
+}
+
 func TestNKeyOptionsPreserveNonceSigning(t *testing.T) {
 	t.Parallel()
 	proof := NKeyProof{
