@@ -30,7 +30,7 @@ func TestLocalEnvironment(t *testing.T) {
 	t.Cleanup(nc.Close)
 	discovery := connectDiscoveryClient(t)
 	t.Cleanup(discovery.Close)
-	waitForService(t, discovery, 30*time.Second)
+	waitForEchoService(t, discovery, 30*time.Second)
 
 	t.Run("Caddy loads the gateway module", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -199,6 +199,7 @@ func testPetsHTTP(t *testing.T, nc *nats.Conn) {
 		{name: "REST update", method: http.MethodPut, path: "/pets/rest-pet", body: `{"name":"Mochi"}`, wantStatus: 200, wantBody: `{"id":"rest-pet","name":"Mochi"}`},
 		{name: "REST delete", method: http.MethodDelete, path: "/pets/rest-pet", wantStatus: 200, wantBody: `{"id":"rest-pet","name":"Mochi"}`},
 		{name: "REST missing", method: http.MethodGet, path: "/pets/rest-pet", wantStatus: 404},
+		{name: "REST invalid ID", method: http.MethodPost, path: "/pets", body: `{"id":"pet.1","name":"Unreachable"}`, wantStatus: 400},
 		{name: "RPC create", method: http.MethodPost, path: "/rpc/pets.CreatePet", body: `{"id":"rpc-pet","name":"Luna"}`, wantStatus: 200, wantBody: `{"id":"rpc-pet","name":"Luna"}`},
 		{name: "RPC get", method: http.MethodPost, path: "/rpc/pets.GetPet", body: `{"id":"rpc-pet"}`, wantStatus: 200, wantBody: `{"id":"rpc-pet","name":"Luna"}`},
 		{name: "RPC update", method: http.MethodPost, path: "/rpc/pets.UpdatePet", body: `{"id":"rpc-pet","name":"Nova"}`, wantStatus: 200, wantBody: `{"id":"rpc-pet","name":"Nova"}`},
@@ -276,7 +277,11 @@ func testPetsHTTP(t *testing.T, nc *nats.Conn) {
 				t.Fatalf("%s endpoint timing not recorded: %+v", name, endpoint)
 			}
 		}
-		if requests != 6 || errorsCount != 1 || !sawLastError || stats.ID != ping.ID {
+		wantRequests, wantErrors := 6, 1
+		if name == "PetsREST" {
+			wantRequests, wantErrors = 7, 2
+		}
+		if requests != wantRequests || errorsCount != wantErrors || !sawLastError || stats.ID != ping.ID {
 			t.Fatalf("%s aggregate stats requests=%d errors=%d last_error=%v ID=%q", name, requests, errorsCount, sawLastError, stats.ID)
 		}
 	}
@@ -546,12 +551,12 @@ func firstHeader(messages []*nats.Msg, name string) string {
 	return messages[0].Header.Get(name)
 }
 
-func waitForService(t *testing.T, nc *nats.Conn, timeout time.Duration) {
+func waitForEchoService(t *testing.T, nc *nats.Conn, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		response, err := nc.Request("$SRV.PING", nil, 500*time.Millisecond)
+		response, err := nc.Request("$SRV.PING.Echo", nil, 500*time.Millisecond)
 		if err == nil && len(response.Data) > 0 {
 			return
 		}

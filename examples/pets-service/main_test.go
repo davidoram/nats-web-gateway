@@ -57,7 +57,7 @@ func TestPetStoreConcurrentAccess(t *testing.T) {
 
 func TestPetValidationAndDecoding(t *testing.T) {
 	t.Parallel()
-	for _, value := range []pet{{}, {ID: "id"}, {Name: "name"}} {
+	for _, value := range []pet{{}, {ID: "id"}, {Name: "name"}, {ID: "pet.1", Name: "Unreachable"}} {
 		if !errors.Is(validatePet(value), errInvalidPet) {
 			t.Fatalf("validatePet(%#v) did not return invalid pet", value)
 		}
@@ -75,5 +75,8 @@ func TestPetValidationAndDecoding(t *testing.T) {
 	id, err := decodeID([]byte(`{"id":"pet-1"}`))
 	if err != nil || id != "pet-1" {
 		t.Fatalf("decode ID = %q, %v", id, err)
+	}
+	if _, err := decodeID([]byte(`{"id":"pet.1"}`)); !errors.Is(err, errInvalidPet) {
+		t.Fatalf("unaddressable ID error = %v", err)
 	}
 }

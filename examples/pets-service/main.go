@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -31,6 +32,7 @@ const (
 var (
 	errInvalidPet = errors.New("pet id and name are required")
 	errMissingPet = errors.New("pet not found")
+	petIDPattern  = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 )
 
 type pet struct {
@@ -113,7 +115,7 @@ func (store *petStore) list() []pet {
 }
 
 func validatePet(value pet) error {
-	if value.ID == "" || value.Name == "" || len(value.ID) > 64 || len(value.Name) > 256 {
+	if !petIDPattern.MatchString(value.ID) || value.Name == "" || len(value.ID) > 64 || len(value.Name) > 256 {
 		return errInvalidPet
 	}
 	return nil
@@ -299,7 +301,7 @@ func decodeID(data []byte) (string, error) {
 	var request struct {
 		ID string `json:"id"`
 	}
-	if err := decodeJSON(data, &request); err != nil || request.ID == "" || len(request.ID) > 64 {
+	if err := decodeJSON(data, &request); err != nil || !petIDPattern.MatchString(request.ID) || len(request.ID) > 64 {
 		return "", errInvalidPet
 	}
 	return request.ID, nil
