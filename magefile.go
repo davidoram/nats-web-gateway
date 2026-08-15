@@ -121,6 +121,9 @@ func buildIntegrationBinaries() error {
 	if err := sh.RunWithV(env, "go", "build", "-o", filepath.FromSlash("build/integration/adr32-example"), "./cmd/adr32-example"); err != nil {
 		return fmt.Errorf("build Linux ADR-32 example service: %w", err)
 	}
+	if err := sh.RunWithV(env, "go", "build", "-o", filepath.FromSlash("build/integration/pets-service"), "./examples/pets-service"); err != nil {
+		return fmt.Errorf("build Linux Pets example services: %w", err)
+	}
 	return nil
 }
 

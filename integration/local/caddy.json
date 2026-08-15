@@ -9,7 +9,7 @@
           "listen": [":8080"],
           "routes": [
             {
-              "match": [{"path": ["/health", "/echo/*", "/errors/*"]}],
+              "match": [{"path": ["/health", "/echo/*", "/errors/*", "/pets", "/pets/*", "/rpc/*"]}],
               "handle": [
                 {
                   "handler": "nats_web_gateway",
@@ -42,6 +42,49 @@
                       "service_error_statuses": {"4001": 400}
                     },
                     "stream_mode": "request_reply"
+                  }, {
+                    "name": "rest_create_pet", "path": "/pets", "methods": ["POST"], "subject": "pets.rest.create",
+                    "timeout": "2s", "max_request_body_bytes": 65536, "max_reply_bytes": 65536,
+                    "response": {"mode": "json", "content_type": "application/json", "service_error_statuses": {"4001": 400, "4041": 404}}, "stream_mode": "request_reply"
+                  }, {
+                    "name": "rest_list_pets", "path": "/pets", "methods": ["GET"], "subject": "pets.rest.list",
+                    "timeout": "2s", "max_request_body_bytes": 1024, "max_reply_bytes": 65536,
+                    "response": {"mode": "json", "content_type": "application/json"}, "stream_mode": "request_reply"
+                  }, {
+                    "name": "rest_get_pet", "path": "/pets/{id}", "methods": ["GET"], "subject": "pets.rest.get.{id}",
+                    "parameters": {"id": {"source": "path", "name": "id", "pattern": "^[A-Za-z0-9_-]+$"}},
+                    "timeout": "2s", "max_request_body_bytes": 1024, "max_reply_bytes": 65536,
+                    "response": {"mode": "json", "content_type": "application/json", "service_error_statuses": {"4041": 404}}, "stream_mode": "request_reply"
+                  }, {
+                    "name": "rest_update_pet", "path": "/pets/{id}", "methods": ["PUT"], "subject": "pets.rest.update.{id}",
+                    "parameters": {"id": {"source": "path", "name": "id", "pattern": "^[A-Za-z0-9_-]+$"}},
+                    "timeout": "2s", "max_request_body_bytes": 65536, "max_reply_bytes": 65536,
+                    "response": {"mode": "json", "content_type": "application/json", "service_error_statuses": {"4001": 400, "4041": 404}}, "stream_mode": "request_reply"
+                  }, {
+                    "name": "rest_delete_pet", "path": "/pets/{id}", "methods": ["DELETE"], "subject": "pets.rest.delete.{id}",
+                    "parameters": {"id": {"source": "path", "name": "id", "pattern": "^[A-Za-z0-9_-]+$"}},
+                    "timeout": "2s", "max_request_body_bytes": 1024, "max_reply_bytes": 65536,
+                    "response": {"mode": "json", "content_type": "application/json", "service_error_statuses": {"4041": 404}}, "stream_mode": "request_reply"
+                  }, {
+                    "name": "rpc_create_pet", "path": "/rpc/pets.CreatePet", "methods": ["POST"], "subject": "pets.rpc.CreatePet",
+                    "timeout": "2s", "max_request_body_bytes": 65536, "max_reply_bytes": 65536,
+                    "response": {"mode": "json", "content_type": "application/json", "service_error_statuses": {"4001": 400}}, "stream_mode": "request_reply"
+                  }, {
+                    "name": "rpc_get_pet", "path": "/rpc/pets.GetPet", "methods": ["POST"], "subject": "pets.rpc.GetPet",
+                    "timeout": "2s", "max_request_body_bytes": 65536, "max_reply_bytes": 65536,
+                    "response": {"mode": "json", "content_type": "application/json", "service_error_statuses": {"4001": 400, "4041": 404}}, "stream_mode": "request_reply"
+                  }, {
+                    "name": "rpc_update_pet", "path": "/rpc/pets.UpdatePet", "methods": ["POST"], "subject": "pets.rpc.UpdatePet",
+                    "timeout": "2s", "max_request_body_bytes": 65536, "max_reply_bytes": 65536,
+                    "response": {"mode": "json", "content_type": "application/json", "service_error_statuses": {"4001": 400, "4041": 404}}, "stream_mode": "request_reply"
+                  }, {
+                    "name": "rpc_delete_pet", "path": "/rpc/pets.DeletePet", "methods": ["POST"], "subject": "pets.rpc.DeletePet",
+                    "timeout": "2s", "max_request_body_bytes": 65536, "max_reply_bytes": 65536,
+                    "response": {"mode": "json", "content_type": "application/json", "service_error_statuses": {"4001": 400, "4041": 404}}, "stream_mode": "request_reply"
+                  }, {
+                    "name": "rpc_list_pets", "path": "/rpc/pets.ListPets", "methods": ["POST"], "subject": "pets.rpc.ListPets",
+                    "timeout": "2s", "max_request_body_bytes": 1024, "max_reply_bytes": 65536,
+                    "response": {"mode": "json", "content_type": "application/json"}, "stream_mode": "request_reply"
                   }, {
                     "name": "missing_fixture",
                     "path": "/errors/no-responders",

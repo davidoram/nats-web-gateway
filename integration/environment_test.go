@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -27,7 +28,9 @@ const (
 func TestLocalEnvironment(t *testing.T) {
 	nc := connectWithRetry(t, 30*time.Second)
 	t.Cleanup(nc.Close)
-	waitForService(t, nc, 30*time.Second)
+	discovery := connectDiscoveryClient(t)
+	t.Cleanup(discovery.Close)
+	waitForService(t, discovery, 30*time.Second)
 
 	t.Run("Caddy loads the gateway module", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -126,7 +129,7 @@ func TestLocalEnvironment(t *testing.T) {
 	})
 
 	t.Run("ADR-32 discovery is available", func(t *testing.T) {
-		response, err := nc.Request("$SRV.PING", nil, 5*time.Second)
+		response, err := discovery.Request("$SRV.PING.Echo", nil, 5*time.Second)
 		if err != nil {
 			t.Fatalf("request service ping: %v", err)
 		}
@@ -137,6 +140,14 @@ func TestLocalEnvironment(t *testing.T) {
 		if ping.Name != "Echo" || ping.Version != "0.1.0" || ping.Type != micro.PingResponseType {
 			t.Fatalf("unexpected service ping: %+v", ping)
 		}
+	})
+
+	t.Run("Pets APIs work end to end and publish service statistics", func(t *testing.T) {
+		testPetsHTTP(t, discovery)
+	})
+
+	t.Run("ADR-32 compatibility across scopes and instance lifecycle", func(t *testing.T) {
+		testADR32Compatibility(t)
 	})
 
 	t.Run("fixture credentials enforce least privilege", func(t *testing.T) {
@@ -173,6 +184,366 @@ func TestLocalEnvironment(t *testing.T) {
 			t.Fatal("timed out waiting for subscription permission violation")
 		}
 	})
+}
+
+func testPetsHTTP(t *testing.T, nc *nats.Conn) {
+	t.Helper()
+	baseURL := envOrDefault("CADDY_URL", defaultCaddyURL)
+	tests := []struct {
+		name, method, path, body, wantBody string
+		wantStatus                         int
+	}{
+		{name: "REST create", method: http.MethodPost, path: "/pets", body: `{"id":"rest-pet","name":"Milo"}`, wantStatus: 200, wantBody: `{"id":"rest-pet","name":"Milo"}`},
+		{name: "REST list", method: http.MethodGet, path: "/pets", wantStatus: 200, wantBody: `[{"id":"rest-pet","name":"Milo"}]`},
+		{name: "REST get", method: http.MethodGet, path: "/pets/rest-pet", wantStatus: 200, wantBody: `{"id":"rest-pet","name":"Milo"}`},
+		{name: "REST update", method: http.MethodPut, path: "/pets/rest-pet", body: `{"name":"Mochi"}`, wantStatus: 200, wantBody: `{"id":"rest-pet","name":"Mochi"}`},
+		{name: "REST delete", method: http.MethodDelete, path: "/pets/rest-pet", wantStatus: 200, wantBody: `{"id":"rest-pet","name":"Mochi"}`},
+		{name: "REST missing", method: http.MethodGet, path: "/pets/rest-pet", wantStatus: 404},
+		{name: "RPC create", method: http.MethodPost, path: "/rpc/pets.CreatePet", body: `{"id":"rpc-pet","name":"Luna"}`, wantStatus: 200, wantBody: `{"id":"rpc-pet","name":"Luna"}`},
+		{name: "RPC get", method: http.MethodPost, path: "/rpc/pets.GetPet", body: `{"id":"rpc-pet"}`, wantStatus: 200, wantBody: `{"id":"rpc-pet","name":"Luna"}`},
+		{name: "RPC update", method: http.MethodPost, path: "/rpc/pets.UpdatePet", body: `{"id":"rpc-pet","name":"Nova"}`, wantStatus: 200, wantBody: `{"id":"rpc-pet","name":"Nova"}`},
+		{name: "RPC list", method: http.MethodPost, path: "/rpc/pets.ListPets", body: `{}`, wantStatus: 200, wantBody: `[{"id":"rpc-pet","name":"Nova"}]`},
+		{name: "RPC delete", method: http.MethodPost, path: "/rpc/pets.DeletePet", body: `{"id":"rpc-pet"}`, wantStatus: 200, wantBody: `{"id":"rpc-pet","name":"Nova"}`},
+		{name: "RPC invalid", method: http.MethodPost, path: "/rpc/pets.CreatePet", body: `{"id":""}`, wantStatus: 400},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request, err := http.NewRequest(test.method, baseURL+test.path, strings.NewReader(test.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Content-Type", "application/json")
+			response, err := http.DefaultClient.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			body, err := io.ReadAll(io.LimitReader(response.Body, 65537))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.StatusCode != test.wantStatus || response.Header.Get("Content-Type") != "application/json" {
+				t.Fatalf("response = %d %q %q", response.StatusCode, response.Header.Get("Content-Type"), body)
+			}
+			if test.wantBody != "" && string(body) != test.wantBody {
+				t.Fatalf("body = %q, want %q", body, test.wantBody)
+			}
+			if test.wantBody == "" && !strings.Contains(string(body), `"error"`) {
+				t.Fatalf("error body = %q", body)
+			}
+		})
+	}
+
+	for _, name := range []string{"PetsREST", "PetsRPC"} {
+		pingMessages := requestMany(t, nc, "$SRV.PING."+name, 300*time.Millisecond)
+		infoMessages := requestMany(t, nc, "$SRV.INFO."+name, 300*time.Millisecond)
+		if len(pingMessages) != 1 || len(infoMessages) != 1 {
+			t.Fatalf("%s discovery responses: PING=%d INFO=%d, want 1 each", name, len(pingMessages), len(infoMessages))
+		}
+		var ping micro.Ping
+		var info micro.Info
+		decodeDiscovery(t, pingMessages[0], &ping)
+		decodeDiscovery(t, infoMessages[0], &info)
+		if ping.Type != micro.PingResponseType || ping.ID == "" || ping.Name != name || ping.Version != serviceVersionForTest ||
+			info.Type != micro.InfoResponseType || info.ID != ping.ID || info.Name != name || info.Version != serviceVersionForTest ||
+			!mapsEqual(info.Metadata, map[string]string{"example": "pets", "state": "ephemeral"}) || len(info.Endpoints) != 5 {
+			t.Fatalf("invalid %s PING/INFO: ping=%+v info=%+v", name, ping, info)
+		}
+		for _, endpoint := range info.Endpoints {
+			wantStyle := strings.ToLower(strings.TrimPrefix(name, "Pets"))
+			if endpoint.Name == "" || endpoint.Subject == "" || endpoint.QueueGroup != "pets" ||
+				!mapsEqual(endpoint.Metadata, map[string]string{"style": wantStyle, "payload": "application/json"}) {
+				t.Fatalf("invalid %s endpoint INFO: %+v", name, endpoint)
+			}
+		}
+
+		messages := requestMany(t, nc, "$SRV.STATS."+name, 300*time.Millisecond)
+		if len(messages) != 1 {
+			t.Fatalf("%s stats responses = %d, want 1", name, len(messages))
+		}
+		var stats micro.Stats
+		decodeDiscovery(t, messages[0], &stats)
+		if stats.Type != micro.StatsResponseType || stats.Name != name || stats.Version != serviceVersionForTest || stats.Started.IsZero() {
+			t.Fatalf("invalid %s stats: %+v", name, stats)
+		}
+		var requests, errorsCount int
+		var sawLastError bool
+		for _, endpoint := range stats.Endpoints {
+			requests += endpoint.NumRequests
+			errorsCount += endpoint.NumErrors
+			sawLastError = sawLastError || endpoint.LastError != ""
+			if endpoint.NumRequests > 0 && (endpoint.ProcessingTime <= 0 || endpoint.AverageProcessingTime <= 0) {
+				t.Fatalf("%s endpoint timing not recorded: %+v", name, endpoint)
+			}
+		}
+		if requests != 6 || errorsCount != 1 || !sawLastError || stats.ID != ping.ID {
+			t.Fatalf("%s aggregate stats requests=%d errors=%d last_error=%v ID=%q", name, requests, errorsCount, sawLastError, stats.ID)
+		}
+	}
+}
+
+const serviceVersionForTest = "1.0.0"
+
+func testADR32Compatibility(t *testing.T) {
+	t.Helper()
+	connections := make([]*nats.Conn, 0, 3)
+	for range 3 {
+		connections = append(connections, connectDiscoveryClient(t))
+	}
+	for _, connection := range connections {
+		t.Cleanup(connection.Close)
+	}
+
+	var handled atomic.Int64
+	services := make([]micro.Service, 0, 2)
+	for index := range 2 {
+		service, err := micro.AddService(connections[index], micro.Config{
+			Name: "CompatibilityFixture", Version: "2.3.4", Description: "ADR-32 compatibility fixture",
+			Metadata: map[string]string{"owner": "integration", "schema": "v1"}, QueueGroup: "compat-workers",
+		})
+		if err != nil {
+			t.Fatalf("add compatibility service %d: %v", index, err)
+		}
+		t.Cleanup(func() { _ = service.Stop() })
+		if err := service.AddEndpoint("work", micro.HandlerFunc(func(request micro.Request) {
+			handled.Add(1)
+			if string(request.Data()) == "error" {
+				_ = request.Error("4999", "intentional compatibility error", nil)
+				return
+			}
+			_ = request.Respond([]byte(`{"ok":true}`))
+		}), micro.WithEndpointSubject("compat.work"), micro.WithEndpointMetadata(map[string]string{"kind": "compatibility"})); err != nil {
+			t.Fatalf("add compatibility endpoint %d: %v", index, err)
+		}
+		services = append(services, service)
+		if err := connections[index].FlushTimeout(2 * time.Second); err != nil {
+			t.Fatalf("flush compatibility service %d: %v", index, err)
+		}
+	}
+
+	client := connections[2]
+	allPings := collectPings(t, client, "$SRV.PING", 2)
+	ids := []string{allPings[0].ID, allPings[1].ID}
+	if ids[0] == ids[1] || ids[0] == "" || ids[1] == "" {
+		t.Fatalf("instance IDs are not non-empty and unique: %q", ids)
+	}
+	slices.Sort(ids)
+	for _, ping := range allPings {
+		assertIdentity(t, ping.ServiceIdentity, ids)
+		if ping.Type != micro.PingResponseType {
+			t.Fatalf("PING type = %q", ping.Type)
+		}
+	}
+	collectPings(t, client, "$SRV.PING.CompatibilityFixture", 2)
+	for _, id := range ids {
+		responses := collectPings(t, client, "$SRV.PING.CompatibilityFixture."+id, 1)
+		if responses[0].ID != id {
+			t.Fatalf("instance PING ID = %q, want %q", responses[0].ID, id)
+		}
+	}
+
+	infos := collectInfo(t, client, "$SRV.INFO.CompatibilityFixture", 2)
+	for _, info := range infos {
+		assertIdentity(t, info.ServiceIdentity, ids)
+		if info.Type != micro.InfoResponseType || info.Description != "ADR-32 compatibility fixture" ||
+			!mapsEqual(info.Metadata, map[string]string{"owner": "integration", "schema": "v1"}) || len(info.Endpoints) != 1 {
+			t.Fatalf("invalid INFO response: %+v", info)
+		}
+		endpoint := info.Endpoints[0]
+		if endpoint.Name != "work" || endpoint.Subject != "compat.work" || endpoint.QueueGroup != "compat-workers" ||
+			!mapsEqual(endpoint.Metadata, map[string]string{"kind": "compatibility"}) {
+			t.Fatalf("invalid endpoint INFO: %+v", endpoint)
+		}
+	}
+	collectInfo(t, client, "$SRV.INFO", 2)
+	for _, id := range ids {
+		collectInfo(t, client, "$SRV.INFO.CompatibilityFixture."+id, 1)
+	}
+
+	for i := 0; i < 5; i++ {
+		if responses := requestMany(t, client, "compat.work", 150*time.Millisecond); len(responses) != 1 {
+			t.Fatalf("successful endpoint request %d replies = %d, want exactly 1", i, len(responses))
+		}
+	}
+	for i := 0; i < 2; i++ {
+		responses := requestManyWithData(t, client, "compat.work", []byte("error"), 150*time.Millisecond)
+		if len(responses) != 1 || responses[0].Header.Get(micro.ErrorCodeHeader) != "4999" {
+			t.Fatalf("error endpoint request %d responses = %d, header = %q", i, len(responses), firstHeader(responses, micro.ErrorCodeHeader))
+		}
+	}
+	if got := handled.Load(); got != 7 {
+		t.Fatalf("handler calls = %d, want exactly 7", got)
+	}
+
+	stats := collectStats(t, client, "$SRV.STATS.CompatibilityFixture", 2)
+	var requests, failures int
+	var sawLastError bool
+	for _, response := range stats {
+		assertIdentity(t, response.ServiceIdentity, ids)
+		if response.Type != micro.StatsResponseType || response.Started.IsZero() || len(response.Endpoints) != 1 {
+			t.Fatalf("invalid STATS response: %+v", response)
+		}
+		endpoint := response.Endpoints[0]
+		requests += endpoint.NumRequests
+		failures += endpoint.NumErrors
+		if endpoint.NumRequests > 0 && (endpoint.ProcessingTime <= 0 || endpoint.AverageProcessingTime <= 0) {
+			t.Fatalf("invalid processing times: %+v", endpoint)
+		}
+		if strings.Contains(endpoint.LastError, "intentional compatibility error") {
+			sawLastError = true
+		}
+	}
+	if requests != 7 || failures != 2 || !sawLastError {
+		t.Fatalf("aggregate stats requests=%d errors=%d last_error=%v", requests, failures, sawLastError)
+	}
+	collectStats(t, client, "$SRV.STATS", 2)
+	for _, id := range ids {
+		collectStats(t, client, "$SRV.STATS.CompatibilityFixture."+id, 1)
+	}
+
+	stoppedID := services[0].Info().ID
+	if err := services[0].Stop(); err != nil {
+		t.Fatalf("stop first compatibility instance: %v", err)
+	}
+	if err := connections[0].FlushTimeout(2 * time.Second); err != nil {
+		t.Fatalf("flush stopped compatibility instance: %v", err)
+	}
+	remaining := collectPings(t, client, "$SRV.PING.CompatibilityFixture", 1)
+	if remaining[0].ID == stoppedID {
+		t.Fatalf("stopped instance %q remained discoverable", stoppedID)
+	}
+	if responses := requestMany(t, client, "compat.work", 150*time.Millisecond); len(responses) != 1 {
+		t.Fatalf("healthy remaining instance replies = %d, want 1", len(responses))
+	}
+}
+
+func connectDiscoveryClient(t *testing.T) *nats.Conn {
+	t.Helper()
+	nc, err := nats.Connect(envOrDefault("NATS_URL", defaultNATSURL),
+		nats.UserInfo("discovery_test", "local-discovery-only"), nats.Name("ADR-32 compatibility test"), nats.Timeout(2*time.Second))
+	if err != nil {
+		t.Fatalf("connect ADR-32 compatibility client: %v", err)
+	}
+	return nc
+}
+
+func requestMany(t *testing.T, nc *nats.Conn, subject string, quiet time.Duration) []*nats.Msg {
+	t.Helper()
+	return requestManyWithData(t, nc, subject, nil, quiet)
+}
+
+func requestManyWithData(t *testing.T, nc *nats.Conn, subject string, data []byte, quiet time.Duration) []*nats.Msg {
+	t.Helper()
+	inbox := nats.NewInbox()
+	subscription, err := nc.SubscribeSync(inbox)
+	if err != nil {
+		t.Fatalf("subscribe discovery inbox: %v", err)
+	}
+	defer subscription.Unsubscribe()
+	if err := nc.PublishRequest(subject, inbox, data); err != nil {
+		t.Fatalf("publish request to %s: %v", subject, err)
+	}
+	if err := nc.FlushTimeout(2 * time.Second); err != nil {
+		t.Fatalf("flush request to %s: %v", subject, err)
+	}
+	first, err := subscription.NextMsg(2 * time.Second)
+	if err != nil {
+		t.Fatalf("wait for first response from %s: %v", subject, err)
+	}
+	responses := []*nats.Msg{first}
+	for {
+		response, err := subscription.NextMsg(quiet)
+		if errors.Is(err, nats.ErrTimeout) {
+			return responses
+		}
+		if err != nil {
+			t.Fatalf("collect responses from %s: %v", subject, err)
+		}
+		responses = append(responses, response)
+	}
+}
+
+func collectPings(t *testing.T, nc *nats.Conn, subject string, want int) []micro.Ping {
+	t.Helper()
+	var responses []micro.Ping
+	for _, message := range requestMany(t, nc, subject, 300*time.Millisecond) {
+		var response micro.Ping
+		decodeDiscovery(t, message, &response)
+		if response.Name == "CompatibilityFixture" {
+			responses = append(responses, response)
+		}
+	}
+	if len(responses) != want {
+		t.Fatalf("%s compatibility PING responses = %d, want %d", subject, len(responses), want)
+	}
+	return responses
+}
+
+func collectInfo(t *testing.T, nc *nats.Conn, subject string, want int) []micro.Info {
+	t.Helper()
+	var responses []micro.Info
+	for _, message := range requestMany(t, nc, subject, 300*time.Millisecond) {
+		var response micro.Info
+		decodeDiscovery(t, message, &response)
+		if response.Name == "CompatibilityFixture" {
+			responses = append(responses, response)
+		}
+	}
+	if len(responses) != want {
+		t.Fatalf("%s compatibility INFO responses = %d, want %d", subject, len(responses), want)
+	}
+	return responses
+}
+
+func collectStats(t *testing.T, nc *nats.Conn, subject string, want int) []micro.Stats {
+	t.Helper()
+	var responses []micro.Stats
+	for _, message := range requestMany(t, nc, subject, 300*time.Millisecond) {
+		var response micro.Stats
+		decodeDiscovery(t, message, &response)
+		if response.Name == "CompatibilityFixture" {
+			responses = append(responses, response)
+		}
+	}
+	if len(responses) != want {
+		t.Fatalf("%s compatibility STATS responses = %d, want %d", subject, len(responses), want)
+	}
+	return responses
+}
+
+func decodeDiscovery(t *testing.T, message *nats.Msg, target any) {
+	t.Helper()
+	if err := json.Unmarshal(message.Data, target); err != nil {
+		t.Fatalf("decode discovery response %q: %v", message.Data, err)
+	}
+}
+
+func assertIdentity(t *testing.T, identity micro.ServiceIdentity, wantIDs []string) {
+	t.Helper()
+	if identity.Name != "CompatibilityFixture" || identity.Version != "2.3.4" ||
+		!mapsEqual(identity.Metadata, map[string]string{"owner": "integration", "schema": "v1"}) ||
+		!slices.Contains(wantIDs, identity.ID) {
+		t.Fatalf("invalid service identity: %+v", identity)
+	}
+}
+
+func mapsEqual(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		if right[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func firstHeader(messages []*nats.Msg, name string) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	return messages[0].Header.Get(name)
 }
 
 func waitForService(t *testing.T, nc *nats.Conn, timeout time.Duration) {

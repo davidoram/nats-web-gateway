@@ -36,6 +36,12 @@ a fixed safe content type. Their matching [Caddyfile](examples/Caddyfile), JSON
 configuration, and curl examples are in the
 [configuration guide](docs/configuration.md#requestreply-examples).
 
+The [Go Pets services](examples/pets-service/main.go) demonstrate complete
+REST-style and RPC-style JSON APIs using the supported NATS Service API
+library. Their [Caddyfile](examples/pets-service/Caddyfile) declares every HTTP
+route and subject explicitly. The shared in-memory state is concurrency-safe
+but non-production and resets whenever the process restarts.
+
 ## Development workflow
 
 Use the repository task lifecycle skills:
@@ -53,7 +59,7 @@ before `$close-task` performs cleanup.
 
 ## Build and verification
 
-Go 1.26.5 or newer is required. Development tools are pinned in `go.mod` and run without global installation through the canonical Mage interface:
+Go 1.26.6 or newer is required. Development tools are pinned in `go.mod` and run without global installation through the canonical Mage interface:
 
 ```text
 go tool mage build       # build/custom Caddy binary
@@ -81,12 +87,13 @@ The environment binds only to loopback:
 | NATS client | `nats://127.0.0.1:14222` | Pinned NATS server used for request/reply tests. |
 | NATS monitoring | `http://127.0.0.1:18222/healthz` | NATS readiness endpoint. |
 | ADR-32 example | `demo.echo` | Echoes payloads and returns ADR-32 error code `4001` for payload `error`. |
+| Pets examples | `pets.rest.>` / `pets.rpc.*` | REST-style and RPC-style ADR-32 services with bounded JSON payloads. |
 
 For interactive development, first build the integration binaries with
 `go tool mage integration` or `go tool mage ci`, then use the same checked-in orchestration directly:
 
 
-The credentials in `integration/local/nats-server.conf` are deliberately weak, checked-in fixtures. They are restricted to the example subjects, must never be reused outside this loopback-only environment, and must not be treated as a deployment configuration. The gateway fixture can publish `demo.echo` and ADR-32 discovery requests and can subscribe only to its NATS inbox. The example service can consume those requests and publish only their replies.
+The credentials in `integration/local/nats-server.conf` are deliberately weak, checked-in fixtures. They are restricted to the example subjects, must never be reused outside this loopback-only environment, and must not be treated as a deployment configuration. The gateway fixture can publish only declared application subjects and subscribe only to its NATS inbox. A separate discovery fixture can access the exact `$SRV.PING`, `$SRV.INFO`, and `$SRV.STATS` scopes used by compatibility tests; `$SRV.*` is not exposed through Caddy. Each example service can consume only its application and ADR-32 control subjects and publish only replies.
 
 
 The root package is the thin Caddy module boundary. Transport-independent route enforcement, credential presentation, and HTTP/NATS translation live under `internal/routes`, `internal/credentials`, and `internal/translation`

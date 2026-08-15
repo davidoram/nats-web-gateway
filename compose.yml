@@ -33,6 +33,24 @@ services:
       timeout: 1s
       retries: 30
 
+  pets-service:
+    image: docker.io/library/alpine:3.22.2@sha256:24bb3511a0db7b5114a4aee033c65a8a4148f39b7b80a398e548546db967a36f
+    command: ["/usr/local/bin/pets-service"]
+    environment:
+      NATS_URL: nats://nats:4222
+      NATS_USER: pets_service
+      NATS_PASSWORD: local-pets-only
+    volumes:
+      - "./build/integration/pets-service:/usr/local/bin/pets-service:ro"
+    depends_on:
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/pets-service-ready"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+
   caddy:
     image: docker.io/library/caddy:2.11.4-alpine@sha256:1172d4213087d3fc30bafc7ff2c2896180eb0c41ff7f75f315568fb36cabdcba
     command: ["/usr/local/bin/caddy-local", "run", "--config", "/etc/caddy/caddy.json"]
@@ -46,6 +64,8 @@ services:
       - "./integration/local/caddy.json:/etc/caddy/caddy.json:ro"
     depends_on:
       nats:
+        condition: service_healthy
+      pets-service:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:8080/health"]
