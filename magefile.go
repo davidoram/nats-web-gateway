@@ -90,7 +90,7 @@ func Integration() (resultErr error) {
 }
 
 func logIntegrationServices(compose []string) {
-	for _, service := range []string{"nats", "adr32-example", "caddy"} {
+	for _, service := range []string{"nats", "adr32-example", "pets-service", "caddy"} {
 		_ = run(compose[0], append(compose[1:], "logs", service)...)
 	}
 }

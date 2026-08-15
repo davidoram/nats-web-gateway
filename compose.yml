@@ -16,7 +16,7 @@ services:
       retries: 30
 
   adr32-example:
-    image: docker.io/library/alpine:3.22.2@sha256:24bb3511a0db7b5114a4aee033c65a8a4148f39b7b80a398e548546db967a36f
+    image: docker.io/library/alpine:3.22.2@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412
     command: ["/usr/local/bin/adr32-example"]
     environment:
       NATS_URL: nats://nats:4222
@@ -34,7 +34,7 @@ services:
       retries: 30
 
   pets-service:
-    image: docker.io/library/alpine:3.22.2@sha256:24bb3511a0db7b5114a4aee033c65a8a4148f39b7b80a398e548546db967a36f
+    image: docker.io/library/alpine:3.22.2@sha256:4b7ce07002c69e8f3d704a9c5d6fd3053be500b7f1c69fc0d80990c2ad8dd412
     command: ["/usr/local/bin/pets-service"]
     environment:
       NATS_URL: nats://nats:4222
@@ -52,7 +52,7 @@ services:
       retries: 30
 
   caddy:
-    image: docker.io/library/caddy:2.11.4-alpine@sha256:1172d4213087d3fc30bafc7ff2c2896180eb0c41ff7f75f315568fb36cabdcba
+    image: docker.io/library/caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
     command: ["/usr/local/bin/caddy-local", "run", "--config", "/etc/caddy/caddy.json"]
     environment:
       NATS_USER: gateway
