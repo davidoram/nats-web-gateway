@@ -73,3 +73,7 @@ Run and report:
 
 Tests must be deterministic, race-safe, independent of public internet services,
 and must not assume fair distribution among queue-group members.
+
+## Completion evidence
+
+- [PR #9](https://github.com/davidoram/nats-web-gateway/pull/9)

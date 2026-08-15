@@ -90,7 +90,7 @@ func Integration() (resultErr error) {
 }
 
 func logIntegrationServices(compose []string) {
-	for _, service := range []string{"nats", "adr32-example", "caddy"} {
+	for _, service := range []string{"nats", "adr32-example", "pets-service", "caddy"} {
 		_ = run(compose[0], append(compose[1:], "logs", service)...)
 	}
 }
@@ -120,6 +120,9 @@ func buildIntegrationBinaries() error {
 	}
 	if err := sh.RunWithV(env, "go", "build", "-o", filepath.FromSlash("build/integration/adr32-example"), "./cmd/adr32-example"); err != nil {
 		return fmt.Errorf("build Linux ADR-32 example service: %w", err)
+	}
+	if err := sh.RunWithV(env, "go", "build", "-o", filepath.FromSlash("build/integration/pets-service"), "./examples/pets-service"); err != nil {
+		return fmt.Errorf("build Linux Pets example services: %w", err)
 	}
 	return nil
 }

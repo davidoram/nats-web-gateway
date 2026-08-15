@@ -251,6 +251,25 @@ copied. Enabling negotiation adds only the gateway-selected `Accept` value. The
 map is intentionally process-local example state and is empty after a service
 restart.
 
+## Pets Service API examples
+
+The runnable [Pets service](../examples/pets-service/main.go) uses the supported
+Go NATS Service API library to register two ADR-32 services. `PetsREST` backs
+`POST /pets`, `GET /pets`, and `GET`, `PUT`, and `DELETE /pets/{id}`.
+`PetsRPC` backs `POST /rpc/pets.CreatePet`, `GetPet`, `UpdatePet`, `DeletePet`,
+and `ListPets`. The complete matching
+[Caddyfile](../examples/pets-service/Caddyfile) declares fixed subjects,
+anchored path IDs, two-second deadlines, 64 KiB JSON request/reply limits, and
+explicit `4001`/`4041` application-error mappings.
+
+Both styles use a mutex-protected in-memory map so the example remains safe
+under concurrent requests. It is not a production datastore: state is shared
+only within one example process and resets on restart. The integration suite
+executes every operation through real HTTP to Caddy to the gateway and real
+NATS services, then validates ADR-32 discovery metadata and statistics directly
+with a separate least-privilege NATS fixture. Discovery subjects are control
+plane interfaces and are never configured as gateway routes.
+
 Configurations from the earlier request/reply scaffold must replace
 `response_mode raw` with the explicit `json` or `binary` mode and declare
 `response_content_type`. This repository has not released a stable version yet;

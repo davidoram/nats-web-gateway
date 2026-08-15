@@ -1,0 +1,136 @@
+:8080 {
+	nats_web_gateway {
+		nats_urls nats://127.0.0.1:4222
+		connect_timeout 5s
+		reconnect_wait 1s
+		max_reconnects -1
+		drain_timeout 30s
+
+		route rest_create_pet {
+			path /pets
+			methods POST
+			subject pets.rest.create
+			timeout 2s
+			max_request_body_bytes 65536
+			max_reply_bytes 65536
+			response_mode json
+			response_content_type application/json
+			service_error_status 4001 400
+			stream_mode request_reply
+		}
+		route rest_list_pets {
+			path /pets
+			methods GET
+			subject pets.rest.list
+			timeout 2s
+			max_request_body_bytes 1024
+			max_reply_bytes 65536
+			response_mode json
+			response_content_type application/json
+			stream_mode request_reply
+		}
+		route rest_get_pet {
+			path /pets/{id}
+			methods GET
+			subject pets.rest.get.{id}
+			parameter id path id ^[A-Za-z0-9_-]+$
+			timeout 2s
+			max_request_body_bytes 1024
+			max_reply_bytes 65536
+			response_mode json
+			response_content_type application/json
+			service_error_status 4041 404
+			stream_mode request_reply
+		}
+		route rest_update_pet {
+			path /pets/{id}
+			methods PUT
+			subject pets.rest.update.{id}
+			parameter id path id ^[A-Za-z0-9_-]+$
+			timeout 2s
+			max_request_body_bytes 65536
+			max_reply_bytes 65536
+			response_mode json
+			response_content_type application/json
+			service_error_status 4001 400
+			service_error_status 4041 404
+			stream_mode request_reply
+		}
+		route rest_delete_pet {
+			path /pets/{id}
+			methods DELETE
+			subject pets.rest.delete.{id}
+			parameter id path id ^[A-Za-z0-9_-]+$
+			timeout 2s
+			max_request_body_bytes 1024
+			max_reply_bytes 65536
+			response_mode json
+			response_content_type application/json
+			service_error_status 4041 404
+			stream_mode request_reply
+		}
+
+		route rpc_create_pet {
+			path /rpc/pets.CreatePet
+			methods POST
+			subject pets.rpc.CreatePet
+			timeout 2s
+			max_request_body_bytes 65536
+			max_reply_bytes 65536
+			response_mode json
+			response_content_type application/json
+			service_error_status 4001 400
+			stream_mode request_reply
+		}
+		route rpc_get_pet {
+			path /rpc/pets.GetPet
+			methods POST
+			subject pets.rpc.GetPet
+			timeout 2s
+			max_request_body_bytes 65536
+			max_reply_bytes 65536
+			response_mode json
+			response_content_type application/json
+			service_error_status 4001 400
+			service_error_status 4041 404
+			stream_mode request_reply
+		}
+		route rpc_update_pet {
+			path /rpc/pets.UpdatePet
+			methods POST
+			subject pets.rpc.UpdatePet
+			timeout 2s
+			max_request_body_bytes 65536
+			max_reply_bytes 65536
+			response_mode json
+			response_content_type application/json
+			service_error_status 4001 400
+			service_error_status 4041 404
+			stream_mode request_reply
+		}
+		route rpc_delete_pet {
+			path /rpc/pets.DeletePet
+			methods POST
+			subject pets.rpc.DeletePet
+			timeout 2s
+			max_request_body_bytes 65536
+			max_reply_bytes 65536
+			response_mode json
+			response_content_type application/json
+			service_error_status 4001 400
+			service_error_status 4041 404
+			stream_mode request_reply
+		}
+		route rpc_list_pets {
+			path /rpc/pets.ListPets
+			methods POST
+			subject pets.rpc.ListPets
+			timeout 2s
+			max_request_body_bytes 1024
+			max_reply_bytes 65536
+			response_mode json
+			response_content_type application/json
+			stream_mode request_reply
+		}
+	}
+}
