@@ -271,8 +271,11 @@ unsubscribe and release any protected connection lease deterministically.
 
 Protected live routes use the same credential adapter and isolated, bounded
 NATS connection pool as protected request/reply routes. NATS subscribe
-permissions remain authoritative. `downstream_identity` is unavailable for a
-stream because there is no application request message on which to place it.
+permissions remain authoritative. A protected stream is also capped at the
+leased connection's remaining `max_lifetime`, so reuse of an older pooled
+connection cannot extend credential validity. `downstream_identity` is
+unavailable for a stream because there is no application request message on
+which to place it.
 
 ## Request/reply examples
 

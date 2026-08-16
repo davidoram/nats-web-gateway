@@ -3,6 +3,7 @@ package natswebgateway
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -121,7 +122,8 @@ func TestHandlerCoreSSEHeartbeatsAndMaximumDuration(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = handler.Cleanup() })
-	recorder := httptest.NewRecorder()
+	started := time.Now()
+	recorder := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
 	request := httptest.NewRequest(http.MethodGet, "/events", nil)
 	if err := handler.ServeHTTP(recorder, request, caddyhttp.HandlerFunc(func(http.ResponseWriter, *http.Request) error { return nil })); err != nil {
 		t.Fatal(err)
@@ -130,14 +132,28 @@ func TestHandlerCoreSSEHeartbeatsAndMaximumDuration(t *testing.T) {
 	if !strings.Contains(body, ": heartbeat\n\n") || !strings.HasSuffix(body, "event: close\ndata: maximum duration reached\n\n") {
 		t.Fatalf("stream body = %q", body)
 	}
+	if recorder.deadline.Before(started.Add(45*time.Millisecond)) || recorder.deadline.After(started.Add(100*time.Millisecond)) {
+		t.Fatalf("write deadline = %v, want stream maximum duration", recorder.deadline)
+	}
+}
+
+func TestStreamSetupCausePreservesPermissionFailure(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(nats.ErrPermissionViolation)
+	if got := streamSetupCause(ctx, context.Canceled); !errors.Is(got, nats.ErrPermissionViolation) {
+		t.Fatalf("setup cause = %v, want permission violation", got)
+	}
 }
 
 func TestCoreSSEBufferEnforcesMessageAndByteLimits(t *testing.T) {
-	buffer := newCoreSSEBuffer(1, 4)
+	buffer := newCoreSSEBuffer(1, 4, 4)
 	buffer.enqueue(&nats.Msg{Data: []byte("four")})
 	buffer.enqueue(&nats.Msg{Data: []byte("next")})
 	select {
-	case <-buffer.overflow:
+	case reason := <-buffer.terminal:
+		if reason != coreSSETerminalSlowConsumer {
+			t.Fatalf("terminal reason = %q", reason)
+		}
 	default:
 		t.Fatal("message overflow was not signaled")
 	}
@@ -147,13 +163,36 @@ func TestCoreSSEBufferEnforcesMessageAndByteLimits(t *testing.T) {
 		t.Fatalf("buffered bytes = %d, want 0", buffer.bytes)
 	}
 
-	oversized := newCoreSSEBuffer(2, 3)
+	oversized := newCoreSSEBuffer(2, 3, 8)
 	oversized.enqueue(&nats.Msg{Data: []byte("four")})
 	select {
-	case <-oversized.overflow:
+	case reason := <-oversized.terminal:
+		if reason != coreSSETerminalSlowConsumer {
+			t.Fatalf("terminal reason = %q", reason)
+		}
 	default:
 		t.Fatal("byte overflow was not signaled")
 	}
+	invalid := newCoreSSEBuffer(2, 8, 3)
+	invalid.enqueue(&nats.Msg{Data: []byte("four")})
+	select {
+	case reason := <-invalid.terminal:
+		if reason != coreSSETerminalInvalid {
+			t.Fatalf("terminal reason = %q", reason)
+		}
+	default:
+		t.Fatal("oversized event was not signaled as invalid")
+	}
+}
+
+type deadlineRecorder struct {
+	*httptest.ResponseRecorder
+	deadline time.Time
+}
+
+func (recorder *deadlineRecorder) SetWriteDeadline(deadline time.Time) error {
+	recorder.deadline = deadline
+	return nil
 }
 
 func TestCoreSSEConfigurationValidation(t *testing.T) {

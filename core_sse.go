@@ -25,19 +25,25 @@ type coreSSEMessage struct {
 }
 
 type coreSSEBuffer struct {
-	mu       sync.Mutex
-	messages chan coreSSEMessage
-	overflow chan struct{}
-	bytes    int64
-	maxBytes int64
-	once     sync.Once
+	mu            sync.Mutex
+	messages      chan coreSSEMessage
+	terminal      chan string
+	bytes         int64
+	maxBytes      int64
+	maxEventBytes int64
 }
 
-func newCoreSSEBuffer(messageLimit int, byteLimit int64) *coreSSEBuffer {
+const (
+	coreSSETerminalSlowConsumer = "slow consumer"
+	coreSSETerminalInvalid      = "invalid event payload"
+)
+
+func newCoreSSEBuffer(messageLimit int, byteLimit, eventLimit int64) *coreSSEBuffer {
 	return &coreSSEBuffer{
-		messages: make(chan coreSSEMessage, messageLimit),
-		overflow: make(chan struct{}),
-		maxBytes: byteLimit,
+		messages:      make(chan coreSSEMessage, messageLimit),
+		terminal:      make(chan string, 1),
+		maxBytes:      byteLimit,
+		maxEventBytes: eventLimit,
 	}
 }
 
@@ -45,8 +51,12 @@ func (buffer *coreSSEBuffer) enqueue(message *nats.Msg) {
 	size := int64(len(message.Data))
 	buffer.mu.Lock()
 	defer buffer.mu.Unlock()
+	if size > buffer.maxEventBytes {
+		buffer.fail(coreSSETerminalInvalid)
+		return
+	}
 	if size > buffer.maxBytes || buffer.bytes > buffer.maxBytes-size || len(buffer.messages) == cap(buffer.messages) {
-		buffer.once.Do(func() { close(buffer.overflow) })
+		buffer.fail(coreSSETerminalSlowConsumer)
 		return
 	}
 	data := append([]byte(nil), message.Data...)
@@ -54,7 +64,14 @@ func (buffer *coreSSEBuffer) enqueue(message *nats.Msg) {
 	case buffer.messages <- coreSSEMessage{data: data, size: size}:
 		buffer.bytes += size
 	default:
-		buffer.once.Do(func() { close(buffer.overflow) })
+		buffer.fail(coreSSETerminalSlowConsumer)
+	}
+}
+
+func (buffer *coreSSEBuffer) fail(reason string) {
+	select {
+	case buffer.terminal <- reason:
+	default:
 	}
 }
 
@@ -65,6 +82,7 @@ func (buffer *coreSSEBuffer) release(message coreSSEMessage) {
 }
 
 func (h Handler) serveCoreSSE(w http.ResponseWriter, r *http.Request, candidate compiledRoute, subject string) error {
+	streamDeadline := time.Now().Add(time.Duration(candidate.config.CoreSSE.MaxDuration))
 	select {
 	case candidate.streams <- struct{}{}:
 		defer func() { <-candidate.streams }()
@@ -99,15 +117,26 @@ func (h Handler) serveCoreSSE(w http.ResponseWriter, r *http.Request, candidate 
 			return nil
 		}
 		connection, tracker, release = lease.connection, lease.tracker, lease.release
+		if lease.expiresAt.Before(streamDeadline) {
+			streamDeadline = lease.expiresAt
+		}
 		defer release()
+	}
+	if !streamDeadline.After(time.Now()) {
+		writeGatewayError(w, http.StatusServiceUnavailable, "service unavailable")
+		return nil
 	}
 	subscriber, ok := connection.(coreNATSSubscriber)
 	if !ok {
 		writeGatewayError(w, http.StatusServiceUnavailable, "service unavailable")
 		return nil
 	}
-	messageByteLimit := min(candidate.config.CoreSSE.BufferBytes, candidate.config.MaxReplyBytes)
-	buffer := newCoreSSEBuffer(candidate.config.CoreSSE.BufferMessages, messageByteLimit)
+	controller := http.NewResponseController(w)
+	if err := controller.SetWriteDeadline(streamDeadline); err != nil {
+		writeGatewayError(w, http.StatusInternalServerError, "streaming unsupported")
+		return nil
+	}
+	buffer := newCoreSSEBuffer(candidate.config.CoreSSE.BufferMessages, candidate.config.CoreSSE.BufferBytes, candidate.config.MaxReplyBytes)
 	unregisterPermission := tracker.register(subject, setupCancel)
 	defer unregisterPermission()
 	subscription, err := subscriber.Subscribe(subject, buffer.enqueue)
@@ -117,7 +146,7 @@ func (h Handler) serveCoreSSE(w http.ResponseWriter, r *http.Request, candidate 
 	}
 	defer subscription.Unsubscribe()
 	if err := subscriber.FlushWithContext(setupCtx); err != nil {
-		writeStreamSetupError(w, err)
+		writeStreamSetupError(w, streamSetupCause(setupCtx, err))
 		return nil
 	}
 	if err := context.Cause(setupCtx); err != nil {
@@ -140,7 +169,7 @@ func (h Handler) serveCoreSSE(w http.ResponseWriter, r *http.Request, candidate 
 
 	heartbeat := time.NewTicker(time.Duration(candidate.config.CoreSSE.HeartbeatInterval))
 	defer heartbeat.Stop()
-	duration := time.NewTimer(time.Duration(candidate.config.CoreSSE.MaxDuration))
+	duration := time.NewTimer(time.Until(streamDeadline))
 	defer duration.Stop()
 	for {
 		select {
@@ -148,8 +177,8 @@ func (h Handler) serveCoreSSE(w http.ResponseWriter, r *http.Request, candidate 
 			return nil
 		case <-h.lifecycle.stopped:
 			return nil
-		case <-buffer.overflow:
-			return writeSSEControl(w, flusher, "error", "slow consumer")
+		case reason := <-buffer.terminal:
+			return writeSSEControl(w, flusher, "error", reason)
 		case <-duration.C:
 			return writeSSEControl(w, flusher, "close", "maximum duration reached")
 		case <-heartbeat.C:
@@ -168,6 +197,13 @@ func (h Handler) serveCoreSSE(w http.ResponseWriter, r *http.Request, candidate 
 			flusher.Flush()
 		}
 	}
+}
+
+func streamSetupCause(ctx context.Context, err error) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
+	return err
 }
 
 func writeStreamSetupError(w http.ResponseWriter, err error) {
