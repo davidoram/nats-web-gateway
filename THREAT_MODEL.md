@@ -144,6 +144,7 @@ gateway error representation. Detailed causes belong in redacted diagnostics.
 | Route or method is not declared | `404 Not Found` or Caddy route fallthrough | Do not reveal whether a related NATS subject exists |
 | Credential is absent, cannot be mapped safely, or NATS rejects connection authentication | `401 Unauthorized` | NATS is the authentication authority; challenge details are adapter/configuration controlled; never echo credential material or callout errors |
 | The authenticated NATS connection lacks permission for the configured operation | `403 Forbidden` | NATS is the authorization authority; preserve permission-denied cause internally; do not disclose account, subject, or permission details |
+| Configured NATS-authenticated downstream identity is unavailable or invalid | `503 Service Unavailable`, or `504 Gateway Timeout` when its lookup exhausts the route deadline | Do not publish the application request; never disclose or fall back to a caller-supplied identity |
 | Request body exceeds the configured hard limit | `413 Content Too Large` | Do not publish a partial request |
 | Request or template input is syntactically invalid | `400 Bad Request` | Do not publish; return only safe field-level context |
 | No NATS responder exists | `503 Service Unavailable` | Distinct from timeout; execution did not obtain a responder, but callers must not infer broad topology |
@@ -198,11 +199,19 @@ operation. See
 
 Connection success proves only what the configured NATS mechanism establishes;
 it does not authenticate arbitrary HTTP claims or message headers. The gateway
-must not manufacture a signed identity envelope from caller input. OSS-011 must
-identify any authenticated attributes NATS exposes through a trustworthy
-protocol on a per-mechanism basis. Where none exist, downstream services rely on
-the NATS account and subject authorization and receive no gateway assertion of
-end-user identity.
+must not manufacture a signed identity envelope from caller input. The optional
+`nats_user_id` source queries `$SYS.REQ.USER.INFO` on the same authenticated,
+credential-isolated connection used for the application request. NATS supplies
+the connection's server-authenticated user ID; the gateway never substitutes an
+HTTP username, credential value, token claim, certificate field, or NKey.
+
+The generated header is configured explicitly, reserved from caller forwarding,
+bounded, and rejected on missing, malformed, oversized, or control-bearing
+values. The application publish occurs only after a valid user-info response.
+Deployments without the NATS system-account service or its least-privilege
+per-user request permission cannot enable propagation; downstream services then
+rely on NATS account and subject authorization without a gateway identity
+assertion. See [`docs/downstream-identity.md`](docs/downstream-identity.md).
 
 ## Residual risks and deferred validation
 
@@ -217,9 +226,9 @@ end-user identity.
   identities and permission set.
 - Per-security-context connections can amplify connection load; caches and
   lifetimes must be bounded without allowing cross-context reuse.
-- Some NATS authentication mechanisms do not expose authenticated end-user
-  attributes to application messages; authorization can remain correct while
-  downstream personalization or user-level auditing is unavailable.
+- Deployments without the per-connection NATS user-info service cannot propagate
+  an authenticated user ID; authorization remains correct while downstream
+  personalization or user-level auditing is unavailable.
 - Core NATS loss and JetStream duplication/retention are protocol properties,
   not failures the gateway can eliminate.
 - Denial of service can be bounded per gateway instance but not eliminated;

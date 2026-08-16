@@ -50,7 +50,12 @@ retries automatically.
         "max_credential_bytes": 8192,
         "max_connections": 100,
         "idle_timeout": "1m",
-        "max_lifetime": "15m"
+        "max_lifetime": "15m",
+        "downstream_identity": {
+          "source": "nats_user_id",
+          "header": "X-Authenticated-User",
+          "max_value_bytes": 256
+        }
       },
       "stream_mode": "request_reply"
     }
@@ -86,6 +91,9 @@ nats_web_gateway {
     max_security_context_connections 100
     security_context_idle_timeout 1m
     security_context_max_lifetime 15m
+    downstream_identity_source nats_user_id
+    downstream_identity_header X-Authenticated-User
+    max_downstream_identity_bytes 256
     stream_mode request_reply
   }
 }
@@ -138,6 +146,15 @@ For `nkey_jwt`, the bounded JWT callback remains live for reconnects. If it
 returns a different JWT, the old cache identity is retired and cannot be reused
 for the refreshed credential.
 
+Downstream identity propagation is optional and is available only on protected
+`request_reply` routes. The sole supported source is `nats_user_id`, described
+in [Downstream identity](downstream-identity.md). The configured NATS user must
+be permitted to publish to `$SYS.REQ.USER.INFO` and subscribe to its inbox, and
+the NATS deployment must expose that authenticated per-connection service. A
+missing, denied, malformed, or oversized identity response fails closed before
+the application request is published. The configured generated header cannot
+also appear in `request_headers`.
+
 Each `parameter` has four arguments: template name, HTTP source (`path` or
 `query`), HTTP field name, and an explicitly anchored regular expression. A
 path placeholder must use a matching path source. A subject-only placeholder
@@ -160,6 +177,9 @@ parameter term query q ^[A-Za-z0-9_-]+$
   must be greater than zero.
 - Header names are canonical and unique. Credential, hop-by-hop, NATS protocol,
   and caller-asserted identity headers cannot be forwarded even if listed.
+- A configured downstream identity header is reserved from ordinary forwarding.
+  Every caller-supplied value is removed before the single NATS-authenticated
+  value is added.
 - `response.mode` is explicitly `json` or `binary`. JSON replies must contain
   one syntactically valid JSON value. Binary replies remain opaque but bounded.
 - `response.content_type` is required, canonical, parameter-free, and becomes
