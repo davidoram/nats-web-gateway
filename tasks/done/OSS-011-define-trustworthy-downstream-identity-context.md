@@ -1,5 +1,20 @@
 # OSS-011 — Define trustworthy downstream identity context
 
+## Why this is needed
+
+A downstream NATS service may need to know which user NATS actually
+authenticated. It must not trust an identity header supplied by the HTTP
+caller, because a caller could simply claim to be another user or an
+administrator.
+
+This optional feature lets the gateway ask NATS for the user authenticated on
+the request's own NATS connection. The gateway removes any caller-supplied value
+for the configured identity header and sends the NATS-authenticated user to the
+service instead. If NATS cannot provide a trustworthy identity, the gateway
+does not send the application request. Routes that do not need downstream
+identity can leave the feature disabled and continue relying on NATS account
+and subject permissions for authorization.
+
 ## Identity and policy
 
 Determine which authenticated identity attributes NATS exposes for each
