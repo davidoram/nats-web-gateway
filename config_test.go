@@ -2,6 +2,7 @@ package natswebgateway
 
 import (
 	"encoding/json"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/davidoram/nats-web-gateway/internal/credentials"
 )
 
 func TestHandlerValidateAcceptsExplicitRoute(t *testing.T) {
@@ -378,6 +380,68 @@ func TestExampleCaddyfileAdapts(t *testing.T) {
 		if !strings.Contains(string(adapted), expected) {
 			t.Fatalf("adapted example is missing %s: %s", expected, adapted)
 		}
+	}
+}
+
+func TestSecurityContextValidationFailsClosed(t *testing.T) {
+	t.Parallel()
+	valid := SecurityContext{Mechanism: credentials.MechanismBearerToken, MaxConnections: 10, IdleTimeout: caddy.Duration(time.Minute), MaxLifetime: caddy.Duration(time.Hour)}
+	tests := []struct {
+		name   string
+		change func(*SecurityContext)
+		want   string
+	}{
+		{name: "mechanism", change: func(value *SecurityContext) { value.Mechanism = "unknown" }, want: "unsupported credential mechanism"},
+		{name: "credential limit", change: func(value *SecurityContext) { value.MaxCredentialBytes = -1 }, want: "credential bytes"},
+		{name: "connections", change: func(value *SecurityContext) { value.MaxConnections = 0 }, want: "max_connections"},
+		{name: "idle", change: func(value *SecurityContext) { value.IdleTimeout = 0 }, want: "idle_timeout"},
+		{name: "lifetime", change: func(value *SecurityContext) { value.MaxLifetime = 0 }, want: "max_lifetime"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			route := validRoute("protected", "/protected", "protected", http.MethodGet)
+			configured := valid
+
+			test.change(&configured)
+			route.SecurityContext = &configured
+			if err := validHandler(route).Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Validate() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestCaddyfileParsesProtectedRoute(t *testing.T) {
+	input := `nats_web_gateway {
+  nats_urls nats://127.0.0.1:4222
+  connect_timeout 5s
+  reconnect_wait 1s
+  max_reconnects -1
+  drain_timeout 30s
+  route protected {
+    path /protected
+    methods GET
+    subject protected
+    timeout 1s
+    max_request_body_bytes 1024
+    max_reply_bytes 1024
+    response_mode binary
+    response_content_type application/octet-stream
+    credential_mechanism bearer_token
+    max_credential_bytes 4096
+    max_security_context_connections 20
+    security_context_idle_timeout 1m
+    security_context_max_lifetime 15m
+    stream_mode request_reply
+  }
+}`
+	var handler Handler
+	if err := handler.UnmarshalCaddyfile(caddyfile.NewTestDispenser(input)); err != nil {
+		t.Fatal(err)
+	}
+	got := handler.Routes[0].SecurityContext
+	if got == nil || got.Mechanism != credentials.MechanismBearerToken || got.MaxCredentialBytes != 4096 || got.MaxConnections != 20 || time.Duration(got.IdleTimeout) != time.Minute || time.Duration(got.MaxLifetime) != 15*time.Minute {
+		t.Fatalf("security context = %#v", got)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
+	"github.com/davidoram/nats-web-gateway/internal/credentials"
 	"golang.org/x/net/http/httpguts"
 )
 
@@ -51,6 +52,33 @@ type Route struct {
 	MaxReplyBytes       int64                `json:"max_reply_bytes"`
 	Response            Response             `json:"response"`
 	StreamMode          string               `json:"stream_mode"`
+	SecurityContext     *SecurityContext     `json:"security_context,omitempty"`
+}
+
+// SecurityContext declares credential adaptation and bounded connection
+// ownership for a protected route.
+type SecurityContext struct {
+	Mechanism          credentials.Mechanism `json:"mechanism"`
+	MaxCredentialBytes int                   `json:"max_credential_bytes,omitempty"`
+	MaxConnections     int                   `json:"max_connections"`
+	IdleTimeout        caddy.Duration        `json:"idle_timeout"`
+	MaxLifetime        caddy.Duration        `json:"max_lifetime"`
+}
+
+func (security SecurityContext) validate() error {
+	if err := (credentials.Adapter{Mechanism: security.Mechanism, MaxCredentialBytes: security.MaxCredentialBytes}).Validate(); err != nil {
+		return err
+	}
+	if security.MaxConnections <= 0 {
+		return errors.New("max_connections must be greater than zero")
+	}
+	if time.Duration(security.IdleTimeout) <= 0 {
+		return errors.New("idle_timeout must be greater than zero")
+	}
+	if time.Duration(security.MaxLifetime) <= 0 {
+		return errors.New("max_lifetime must be greater than zero")
+	}
+	return nil
 }
 
 // NATSConnection declares the operator-owned connection used by routes which
@@ -165,6 +193,14 @@ func (route Route) validate() error {
 	}
 	if route.StreamMode != streamModeRequestReply && route.StreamMode != streamModeCoreSSE && route.StreamMode != streamModeJetStreamSSE {
 		return fmt.Errorf("unsupported stream_mode %q", route.StreamMode)
+	}
+	if route.SecurityContext != nil {
+		if route.StreamMode != streamModeRequestReply {
+			return errors.New("security_context currently supports only request_reply routes")
+		}
+		if err := route.SecurityContext.validate(); err != nil {
+			return fmt.Errorf("security_context: %w", err)
+		}
 	}
 	if route.Response.Mode != responseModeJSON && route.Response.Mode != responseModeBinary {
 		return fmt.Errorf("unsupported response mode %q", route.Response.Mode)
@@ -638,6 +674,28 @@ func unmarshalRoute(d *caddyfile.Dispenser) (Route, error) {
 			if !d.AllArgs(&route.StreamMode) {
 				return route, d.ArgErr()
 			}
+		case "credential_mechanism":
+			var mechanism string
+			if !d.AllArgs(&mechanism) {
+				return route, d.ArgErr()
+			}
+			ensureSecurityContext(&route).Mechanism = credentials.Mechanism(mechanism)
+		case "max_credential_bytes":
+			if err := parsePositiveInt(d, &ensureSecurityContext(&route).MaxCredentialBytes); err != nil {
+				return route, err
+			}
+		case "max_security_context_connections":
+			if err := parsePositiveInt(d, &ensureSecurityContext(&route).MaxConnections); err != nil {
+				return route, err
+			}
+		case "security_context_idle_timeout":
+			if err := parseDuration(d, &ensureSecurityContext(&route).IdleTimeout); err != nil {
+				return route, err
+			}
+		case "security_context_max_lifetime":
+			if err := parseDuration(d, &ensureSecurityContext(&route).MaxLifetime); err != nil {
+				return route, err
+			}
 		case "response_mode":
 			if !d.AllArgs(&route.Response.Mode) {
 				return route, d.ArgErr()
@@ -684,6 +742,26 @@ func unmarshalRoute(d *caddyfile.Dispenser) (Route, error) {
 		}
 	}
 	return route, nil
+}
+
+func ensureSecurityContext(route *Route) *SecurityContext {
+	if route.SecurityContext == nil {
+		route.SecurityContext = new(SecurityContext)
+	}
+	return route.SecurityContext
+}
+
+func parsePositiveInt(d *caddyfile.Dispenser, target *int) error {
+	var value string
+	if !d.AllArgs(&value) {
+		return d.ArgErr()
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return d.Errf("invalid positive integer %q", value)
+	}
+	*target = parsed
+	return nil
 }
 
 func parsePositiveInt64(d *caddyfile.Dispenser, target *int64) error {

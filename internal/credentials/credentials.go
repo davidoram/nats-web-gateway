@@ -2,16 +2,82 @@ package credentials
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/nats-io/nats.go"
 )
+
+// Context contains the opaque cache identity and NATS options for one adapted
+// HTTP security context. Key is a one-way digest and is safe only for in-memory
+// equality; it must not be logged or otherwise exposed.
+type Context struct {
+	Key      [sha256.Size]byte
+	Options  []nats.Option
+	identity *identityTracker
+}
+
+type identityTracker struct {
+	mu         sync.Mutex
+	key        [sha256.Size]byte
+	generation uint64
+	refresh    func() (string, error)
+	mechanism  Mechanism
+}
+
+// RefreshIdentity refreshes callback-backed credentials before pool lookup.
+func (security Context) RefreshIdentity() ([sha256.Size]byte, uint64, error) {
+	if security.identity == nil {
+		return security.Key, 0, nil
+	}
+	if security.identity.refresh != nil {
+		credential, err := security.identity.refresh()
+		if err != nil {
+			return [sha256.Size]byte{}, 0, err
+		}
+		security.identity.observe(credential)
+	}
+	key, generation := security.identity.snapshot()
+	return key, generation, nil
+}
+
+// ObservedIdentity reports the last credential identity used by a NATS option.
+func (security Context) ObservedIdentity() ([sha256.Size]byte, uint64) {
+	if security.identity == nil {
+		return security.Key, 0
+	}
+	return security.identity.snapshot()
+}
+
+// IdentityChanged reports whether a callback-backed credential rotated after
+// the supplied generation authenticated a pooled connection.
+func (security Context) IdentityChanged(generation uint64) bool {
+	_, current := security.ObservedIdentity()
+	return current != generation
+}
+
+func (tracker *identityTracker) observe(credential string) {
+	key := credentialKey(tracker.mechanism, credential)
+	tracker.mu.Lock()
+	if tracker.key != key {
+		tracker.key = key
+		tracker.generation++
+	}
+	tracker.mu.Unlock()
+}
+
+func (tracker *identityTracker) snapshot() ([sha256.Size]byte, uint64) {
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	return tracker.key, tracker.generation
+}
 
 const DefaultMaxCredentialBytes = 8 * 1024
 
@@ -57,11 +123,26 @@ func (adapter Adapter) Validate() error {
 // Options translates the configured presentation without authenticating it.
 // The returned option must be used only for the request's security context.
 func (adapter Adapter) Options(request *http.Request) ([]nats.Option, error) {
-	if err := adapter.Validate(); err != nil {
+	securityContext, err := adapter.adapt(request, false)
+	if err != nil {
 		return nil, err
 	}
+	return securityContext.Options, nil
+}
+
+// Adapt translates one credential presentation and derives a mechanism-scoped,
+// one-way identity for connection isolation. It does not authenticate the
+// credential; successful NATS connection establishment remains authoritative.
+func (adapter Adapter) Adapt(request *http.Request) (Context, error) {
+	return adapter.adapt(request, true)
+}
+
+func (adapter Adapter) adapt(request *http.Request, identify bool) (Context, error) {
+	if err := adapter.Validate(); err != nil {
+		return Context{}, err
+	}
 	if request == nil {
-		return nil, ErrCredentialMissing
+		return Context{}, ErrCredentialMissing
 	}
 	limit := adapter.MaxCredentialBytes
 	if limit == 0 {
@@ -71,38 +152,38 @@ func (adapter Adapter) Options(request *http.Request) ([]nats.Option, error) {
 	switch adapter.Mechanism {
 	case MechanismBearerToken:
 		if hasTrustedProof(request.Context()) {
-			return nil, ErrCredentialAmbiguous
+			return Context{}, ErrCredentialAmbiguous
 		}
 		token, err := bearerToken(request, limit)
 		if err != nil {
-			return nil, err
+			return Context{}, err
 		}
-		return []nats.Option{nats.Token(token)}, nil
+		return adaptedContext(adapter.Mechanism, token, nats.Token(token)), nil
 	case MechanismUserPassword:
 		if hasTrustedProof(request.Context()) {
-			return nil, ErrCredentialAmbiguous
+			return Context{}, ErrCredentialAmbiguous
 		}
 		username, password, err := basicCredentials(request, limit)
 		if err != nil {
-			return nil, err
+			return Context{}, err
 		}
-		return []nats.Option{nats.UserInfo(username, password)}, nil
+		return adaptedContext(adapter.Mechanism, username+"\x00"+password, nats.UserInfo(username, password)), nil
 	case MechanismNKey:
 		if len(request.Header.Values("Authorization")) != 0 || hasNKeyJWTProof(request.Context()) || hasTLSProof(request.Context()) {
-			return nil, ErrCredentialAmbiguous
+			return Context{}, ErrCredentialAmbiguous
 		}
 		proof, ok := request.Context().Value(nkeyContextKey{}).(NKeyProof)
 		if !ok || !validTextCredential(proof.PublicKey, limit) || proof.Sign == nil {
-			return nil, ErrProofUnavailable
+			return Context{}, ErrProofUnavailable
 		}
-		return []nats.Option{nats.Nkey(proof.PublicKey, proof.Sign)}, nil
+		return adaptedContext(adapter.Mechanism, proof.PublicKey, nats.Nkey(proof.PublicKey, proof.Sign)), nil
 	case MechanismNKeyJWT:
 		if len(request.Header.Values("Authorization")) != 0 || hasNKeyProof(request.Context()) || hasTLSProof(request.Context()) {
-			return nil, ErrCredentialAmbiguous
+			return Context{}, ErrCredentialAmbiguous
 		}
 		proof, ok := request.Context().Value(nkeyJWTContextKey{}).(NKeyJWTProof)
 		if !ok || proof.JWT == nil || proof.Sign == nil {
-			return nil, ErrProofUnavailable
+			return Context{}, ErrProofUnavailable
 		}
 		boundedJWT := func() (string, error) {
 			jwt, err := proof.JWT()
@@ -114,23 +195,49 @@ func (adapter Adapter) Options(request *http.Request) ([]nats.Option, error) {
 			}
 			return jwt, nil
 		}
-		return []nats.Option{nats.UserJWT(boundedJWT, proof.Sign)}, nil
+		if !identify {
+			return Context{Options: []nats.Option{nats.UserJWT(boundedJWT, proof.Sign)}}, nil
+		}
+		jwt, err := boundedJWT()
+		if err != nil {
+			return Context{}, err
+		}
+		tracker := &identityTracker{key: credentialKey(adapter.Mechanism, jwt), refresh: boundedJWT, mechanism: adapter.Mechanism}
+		refreshingJWT := func() (string, error) {
+			refreshed, refreshErr := boundedJWT()
+			if refreshErr != nil {
+				return "", refreshErr
+			}
+			tracker.observe(refreshed)
+			return refreshed, nil
+		}
+		return Context{Key: tracker.key, Options: []nats.Option{nats.UserJWT(refreshingJWT, proof.Sign)}, identity: tracker}, nil
 	case MechanismTLS:
 		if len(request.Header.Values("Authorization")) != 0 || hasNKeyProof(request.Context()) || hasNKeyJWTProof(request.Context()) {
-			return nil, ErrCredentialAmbiguous
+			return Context{}, ErrCredentialAmbiguous
 		}
 		certificate, ok := request.Context().Value(tlsCertificateContextKey{}).(tls.Certificate)
 		if !ok || len(certificate.Certificate) == 0 || certificate.PrivateKey == nil {
-			return nil, ErrProofUnavailable
+			return Context{}, ErrProofUnavailable
 		}
 		config := &tls.Config{
 			MinVersion:   tls.VersionTLS12,
 			Certificates: []tls.Certificate{certificate},
 		}
-		return []nats.Option{nats.Secure(config)}, nil
+		fingerprint := sha256.Sum256(certificate.Certificate[0])
+		return adaptedContext(adapter.Mechanism, string(fingerprint[:]), nats.Secure(config)), nil
 	default:
 		panic("validated credential mechanism has no adapter")
 	}
+}
+
+func adaptedContext(mechanism Mechanism, credential string, options ...nats.Option) Context {
+	key := credentialKey(mechanism, credential)
+	return Context{Key: key, Options: options}
+}
+
+func credentialKey(mechanism Mechanism, credential string) [sha256.Size]byte {
+	return sha256.Sum256(append(append([]byte(mechanism), 0), credential...))
 }
 
 // NKeyJWTProof holds callbacks that retain the NKey signing operation. The JWT

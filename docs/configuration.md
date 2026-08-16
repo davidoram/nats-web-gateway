@@ -45,6 +45,13 @@ retries automatically.
         "content_type": "application/json",
         "service_error_statuses": {"4001": 400}
       },
+      "security_context": {
+        "mechanism": "bearer_token",
+        "max_credential_bytes": 8192,
+        "max_connections": 100,
+        "idle_timeout": "1m",
+        "max_lifetime": "15m"
+      },
       "stream_mode": "request_reply"
     }
   ]
@@ -74,6 +81,11 @@ nats_web_gateway {
     response_mode json
     response_content_type application/json
     service_error_status 4001 400
+    credential_mechanism bearer_token
+    max_credential_bytes 8192
+    max_security_context_connections 100
+    security_context_idle_timeout 1m
+    security_context_max_lifetime 15m
     stream_mode request_reply
   }
 }
@@ -83,10 +95,17 @@ nats_web_gateway {
 
 The `nats` block is required. `urls` contains one or more explicit `nats`,
 `tls`, `ws`, or `wss` server URLs without embedded credentials. The initial
-connection must authenticate successfully before Caddy accepts the
-configuration. A disconnected or reconnecting connection is not ready; a
-successful reconnect restores readiness. `max_reconnects: -1` retries for the
-life of the module instance, while a non-negative value bounds retry attempts.
+operator connection must authenticate successfully before Caddy accepts a
+configuration containing an unprotected route. A disconnected or reconnecting
+operator connection is not ready; a successful reconnect restores readiness.
+`max_reconnects: -1` retries for the life of the module instance, while a
+non-negative value bounds retry attempts.
+
+A handler whose routes are all protected does not open or require an operator
+connection. It is ready after configuration validation and authenticates each
+security context lazily on its first request. Request deadlines bound connection
+establishment; one slow authentication attempt does not block other security
+contexts or handler cleanup.
 
 Each handler instance owns its connection. During a Caddy reload, the new and
 old instances may overlap without sharing mutable state. Cleanup first stops
@@ -101,6 +120,23 @@ routes without an end-user security context and must have only the publish and
 inbox-subscribe permissions required by the declared routes. Protected routes
 will use distinct credential-adapted connections; the gateway never expands
 the permissions NATS grants.
+
+A protected route must configure a credential mechanism, maximum connections,
+idle timeout, and maximum lifetime. The credential byte limit may be omitted to
+use the adapter's 8 KiB default. Missing or malformed credentials and failed
+NATS authentication return `401`; NATS publish permission denial returns `403`;
+connection-limit and connectivity failures return `503`. A protected route
+never falls back to the operator connection.
+
+Connections are cached only under a one-way, mechanism-scoped digest of the
+exact credential presentation. Cardinality is bounded per protected route.
+Idle connections close after `idle_timeout`, every connection is retired after
+`max_lifetime`, and handler cleanup closes the protected pools. Overlapping
+Caddy instances own independent pools. Set `max_lifetime` no longer than the
+authentication mechanism's expiry and revocation requirements.
+For `nkey_jwt`, the bounded JWT callback remains live for reconnects. If it
+returns a different JWT, the old cache identity is retired and cannot be reused
+for the refreshed credential.
 
 Each `parameter` has four arguments: template name, HTTP source (`path` or
 `query`), HTTP field name, and an explicitly anchored regular expression. A

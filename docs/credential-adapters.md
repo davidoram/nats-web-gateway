@@ -7,10 +7,11 @@ establishment is the authentication result; the resulting NATS account and
 subject permissions are the authorization result.
 
 The adapter package deliberately keeps credential presentation separate from
-connection ownership. OSS-010 will bind each adapted credential to a distinct,
-bounded security-context connection. Until that connection integration lands,
-these adapters are an internal protocol boundary and are not a new protected
-route configuration surface.
+connection ownership. A protected route binds the configured adapter to a
+bounded security-context connection pool. The gateway derives a one-way,
+mechanism-scoped in-memory key from each presentation and reuses a connection
+only for an exact key match; the key and credentials are never logged or
+exposed. NATS connection success, not the key, is the authentication result.
 
 ## Supported mappings
 
@@ -43,10 +44,16 @@ never include credential values.
   whenever credentials cross a network. TLS policy and trust stores remain
   deployment configuration, not identity decisions made by an adapter.
 - Never share the resulting option or connection across security contexts.
-  Connection cardinality, expiry, reconnect, and cleanup policy belongs to
-  OSS-010.
+  Configure explicit cardinality, idle, and maximum-lifetime bounds on every
+  protected route. Exhaustion fails closed instead of using the operator
+  connection.
 
 The real-NATS integration suite verifies bearer token, HTTP Basic, and NKey
 nonce authentication. JWT and TLS option construction is tested directly so
 their proof-bearing callbacks and private-key handles remain intact without
 placing long-lived secrets in repository fixtures.
+
+The NKey/JWT callback remains bounded and live for NATS reconnects rather than
+being replaced with a snapshot. When it rotates to a different JWT, the
+connection pool detects the changed credential identity, retires the prior
+entry, and prevents the refreshed JWT from inheriting that entry's connection.
