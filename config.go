@@ -52,7 +52,39 @@ type Route struct {
 	MaxReplyBytes       int64                `json:"max_reply_bytes"`
 	Response            Response             `json:"response"`
 	StreamMode          string               `json:"stream_mode"`
+	CoreSSE             *CoreSSE             `json:"core_sse,omitempty"`
 	SecurityContext     *SecurityContext     `json:"security_context,omitempty"`
+}
+
+// CoreSSE declares bounded runtime policy for an ephemeral Core NATS stream.
+type CoreSSE struct {
+	BufferMessages    int            `json:"buffer_messages"`
+	BufferBytes       int64          `json:"buffer_bytes"`
+	HeartbeatInterval caddy.Duration `json:"heartbeat_interval"`
+	MaxDuration       caddy.Duration `json:"max_duration"`
+	MaxConnections    int            `json:"max_connections"`
+}
+
+func (stream CoreSSE) validate() error {
+	if stream.BufferMessages <= 0 {
+		return errors.New("buffer_messages must be greater than zero")
+	}
+	if stream.BufferBytes <= 0 {
+		return errors.New("buffer_bytes must be greater than zero")
+	}
+	if time.Duration(stream.HeartbeatInterval) <= 0 {
+		return errors.New("heartbeat_interval must be greater than zero")
+	}
+	if time.Duration(stream.MaxDuration) <= 0 {
+		return errors.New("max_duration must be greater than zero")
+	}
+	if time.Duration(stream.HeartbeatInterval) >= time.Duration(stream.MaxDuration) {
+		return errors.New("heartbeat_interval must be less than max_duration")
+	}
+	if stream.MaxConnections <= 0 {
+		return errors.New("max_connections must be greater than zero")
+	}
+	return nil
 }
 
 // SecurityContext declares credential adaptation and bounded connection
@@ -225,12 +257,25 @@ func (route Route) validate() error {
 	if route.StreamMode != streamModeRequestReply && route.StreamMode != streamModeCoreSSE && route.StreamMode != streamModeJetStreamSSE {
 		return fmt.Errorf("unsupported stream_mode %q", route.StreamMode)
 	}
-	if route.SecurityContext != nil {
-		if route.StreamMode != streamModeRequestReply {
-			return errors.New("security_context currently supports only request_reply routes")
+	if route.StreamMode == streamModeCoreSSE {
+		if route.CoreSSE == nil {
+			return errors.New("core_sse configuration is required for core_sse routes")
 		}
+		if err := route.CoreSSE.validate(); err != nil {
+			return fmt.Errorf("core_sse: %w", err)
+		}
+	} else if route.CoreSSE != nil {
+		return errors.New("core_sse configuration requires stream_mode core_sse")
+	}
+	if route.StreamMode == streamModeJetStreamSSE {
+		return errors.New("jetstream_sse is not implemented")
+	}
+	if route.SecurityContext != nil {
 		if err := route.SecurityContext.validate(); err != nil {
 			return fmt.Errorf("security_context: %w", err)
+		}
+		if route.StreamMode != streamModeRequestReply && route.SecurityContext.DownstreamIdentity != nil {
+			return errors.New("downstream_identity supports only request_reply routes")
 		}
 		if route.SecurityContext.DownstreamIdentity != nil && slices.Contains(route.RequestHeaders, route.SecurityContext.DownstreamIdentity.Header) {
 			return fmt.Errorf("request_headers contains gateway-generated downstream identity header %q", route.SecurityContext.DownstreamIdentity.Header)
@@ -717,6 +762,26 @@ func unmarshalRoute(d *caddyfile.Dispenser) (Route, error) {
 			if !d.AllArgs(&route.StreamMode) {
 				return route, d.ArgErr()
 			}
+		case "core_sse_buffer_messages":
+			if err := parsePositiveInt(d, &ensureCoreSSE(&route).BufferMessages); err != nil {
+				return route, err
+			}
+		case "core_sse_buffer_bytes":
+			if err := parsePositiveInt64(d, &ensureCoreSSE(&route).BufferBytes); err != nil {
+				return route, err
+			}
+		case "core_sse_heartbeat_interval":
+			if err := parseDuration(d, &ensureCoreSSE(&route).HeartbeatInterval); err != nil {
+				return route, err
+			}
+		case "core_sse_max_duration":
+			if err := parseDuration(d, &ensureCoreSSE(&route).MaxDuration); err != nil {
+				return route, err
+			}
+		case "core_sse_max_connections":
+			if err := parsePositiveInt(d, &ensureCoreSSE(&route).MaxConnections); err != nil {
+				return route, err
+			}
 		case "credential_mechanism":
 			var mechanism string
 			if !d.AllArgs(&mechanism) {
@@ -804,6 +869,13 @@ func ensureSecurityContext(route *Route) *SecurityContext {
 		route.SecurityContext = new(SecurityContext)
 	}
 	return route.SecurityContext
+}
+
+func ensureCoreSSE(route *Route) *CoreSSE {
+	if route.CoreSSE == nil {
+		route.CoreSSE = new(CoreSSE)
+	}
+	return route.CoreSSE
 }
 
 func ensureDownstreamIdentity(route *Route) *DownstreamIdentity {

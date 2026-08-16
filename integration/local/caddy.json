@@ -9,7 +9,7 @@
           "listen": [":8080"],
           "routes": [
             {
-              "match": [{"path": ["/health", "/echo/*", "/errors/*", "/pets", "/pets/*", "/rpc/*"]}],
+              "match": [{"path": ["/health", "/echo/*", "/errors/*", "/events", "/pets", "/pets/*", "/rpc/*"]}],
               "handle": [
                 {
                   "handler": "nats_web_gateway",
@@ -42,6 +42,23 @@
                       "service_error_statuses": {"4001": 400}
                     },
                     "stream_mode": "request_reply"
+                  }, {
+                    "name": "live_events",
+                    "path": "/events",
+                    "methods": ["GET"],
+                    "subject": "demo.events",
+                    "timeout": "2s",
+                    "max_request_body_bytes": 1024,
+                    "max_reply_bytes": 1024,
+                    "response": {"mode": "binary", "content_type": "application/octet-stream"},
+                    "stream_mode": "core_sse",
+                    "core_sse": {
+                      "buffer_messages": 8,
+                      "buffer_bytes": 8192,
+                      "heartbeat_interval": "100ms",
+                      "max_duration": "5s",
+                      "max_connections": 2
+                    }
                   }, {
                     "name": "rest_create_pet", "path": "/pets", "methods": ["POST"], "subject": "pets.rest.create",
                     "timeout": "2s", "max_request_body_bytes": 65536, "max_reply_bytes": 65536,

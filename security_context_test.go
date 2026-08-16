@@ -45,6 +45,9 @@ func TestSecurityContextPoolIsolatesReusesAndBoundsConnections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if remaining := time.Until(first.expiresAt); remaining < 59*time.Minute || remaining > time.Hour {
+		t.Fatalf("lease lifetime remaining = %v", remaining)
+	}
 	second, err := pool.acquire(context.Background(), alice)
 	if err != nil {
 		t.Fatal(err)

@@ -43,6 +43,7 @@ type securityContextAttempt struct {
 type securityContextLease struct {
 	connection natsConnection
 	tracker    *permissionTracker
+	expiresAt  time.Time
 	release    func()
 }
 
@@ -169,9 +170,14 @@ func (pool *securityContextPool) connectContext(key [32]byte, adapted credential
 
 func (pool *securityContextPool) leaseLocked(key [32]byte, entry *securityContextEntry) *securityContextLease {
 	var once sync.Once
-	return &securityContextLease{connection: entry.connection, tracker: entry.tracker, release: func() {
-		once.Do(func() { pool.release(key, entry) })
-	}}
+	return &securityContextLease{
+		connection: entry.connection,
+		tracker:    entry.tracker,
+		expiresAt:  entry.created.Add(time.Duration(pool.config.MaxLifetime)),
+		release: func() {
+			once.Do(func() { pool.release(key, entry) })
+		},
+	}
 }
 
 func (pool *securityContextPool) release(key [32]byte, entry *securityContextEntry) {

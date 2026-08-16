@@ -25,6 +25,8 @@ and termination semantics are documented in the
 [credential adapter guide](docs/credential-adapters.md). Optional propagation
 of the server-authenticated NATS user is documented in the
 [downstream identity guide](docs/downstream-identity.md).
+Core NATS live-stream guarantees, limits, and SSE configuration are documented
+in [Core NATS live SSE](docs/configuration.md#core-nats-live-sse).
 
 The gateway provisions an instance-owned, least-privilege NATS connection,
 tracks reconnect readiness, and drains deterministically across overlapping

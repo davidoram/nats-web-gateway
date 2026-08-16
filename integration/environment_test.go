@@ -3,6 +3,7 @@
 package integration_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -92,6 +93,53 @@ func TestLocalEnvironment(t *testing.T) {
 		}
 		if response.StatusCode != http.StatusOK || string(body) != "hello over HTTP" || response.Header.Get("Content-Type") != "text/plain" {
 			t.Fatalf("HTTP response = %d %q %q", response.StatusCode, body, response.Header.Get("Content-Type"))
+		}
+	})
+
+	t.Run("Caddy streams ephemeral Core NATS messages as SSE", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, envOrDefault("CADDY_URL", defaultCaddyURL)+"/events", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK || response.Header.Get("Content-Type") != "text/event-stream" {
+			t.Fatalf("SSE response = %d %q", response.StatusCode, response.Header.Get("Content-Type"))
+		}
+		reader := bufio.NewReader(response.Body)
+		if line, err := reader.ReadString('\n'); err != nil || line != ": connected\n" {
+			t.Fatalf("SSE prelude = %q, %v", line, err)
+		}
+		if _, err := reader.ReadString('\n'); err != nil {
+			t.Fatal(err)
+		}
+		if err := discovery.Publish("demo.events", []byte("hello\nworld")); err != nil {
+			t.Fatal(err)
+		}
+		if err := discovery.FlushTimeout(time.Second); err != nil {
+			t.Fatal(err)
+		}
+		var event strings.Builder
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.HasPrefix(line, ":") {
+				continue
+			}
+			event.WriteString(line)
+			if line == "\n" {
+				break
+			}
+		}
+		if event.String() != "data: hello\ndata: world\n\n" {
+			t.Fatalf("SSE event = %q", event.String())
 		}
 	})
 
