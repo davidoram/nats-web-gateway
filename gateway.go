@@ -388,6 +388,25 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 			connection, tracker, release = lease.connection, lease.tracker, lease.release
 			defer release()
 		}
+		if identityConfig := candidate.config.SecurityContext; identityConfig != nil && identityConfig.DownstreamIdentity != nil {
+			identity, identityErr := resolveDownstreamIdentity(ctx, connection, *identityConfig.DownstreamIdentity)
+			if identityErr != nil {
+				cancel(nil)
+				timeoutCancel()
+				if errors.Is(identityErr, context.Canceled) {
+					return nil
+				}
+				if errors.Is(identityErr, context.DeadlineExceeded) || errors.Is(identityErr, nats.ErrTimeout) {
+					writeGatewayError(w, http.StatusGatewayTimeout, "upstream request timed out")
+				} else {
+					writeGatewayError(w, http.StatusServiceUnavailable, "service unavailable")
+				}
+				return nil
+			}
+			requestHeaders.Del(identityConfig.DownstreamIdentity.Header)
+			requestHeaders.Set(identityConfig.DownstreamIdentity.Header, identity)
+			forwardHeaders = append(slices.Clone(forwardHeaders), identityConfig.DownstreamIdentity.Header)
+		}
 		requester := permissionAwareRequester{connection: connection, tracker: tracker, cancel: cancel}
 		reply, err := translation.Execute(ctx, requester, translation.Request{
 			Subject: subject, Header: requestHeaders, Body: r.Body,

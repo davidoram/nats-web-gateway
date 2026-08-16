@@ -57,3 +57,7 @@ The NKey/JWT callback remains bounded and live for NATS reconnects rather than
 being replaced with a snapshot. When it rotates to a different JWT, the
 connection pool detects the changed credential identity, retires the prior
 entry, and prevents the refreshed JWT from inheriting that entry's connection.
+
+Credential adaptation never creates a downstream identity assertion. Optional
+propagation is a separate boundary that queries NATS for the authenticated user
+on the resulting connection; see [Downstream identity](downstream-identity.md).

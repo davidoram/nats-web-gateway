@@ -432,6 +432,9 @@ func TestCaddyfileParsesProtectedRoute(t *testing.T) {
     max_security_context_connections 20
     security_context_idle_timeout 1m
     security_context_max_lifetime 15m
+		downstream_identity_source nats_user_id
+		downstream_identity_header X-Authenticated-User
+		max_downstream_identity_bytes 256
     stream_mode request_reply
   }
 }`
@@ -440,7 +443,7 @@ func TestCaddyfileParsesProtectedRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := handler.Routes[0].SecurityContext
-	if got == nil || got.Mechanism != credentials.MechanismBearerToken || got.MaxCredentialBytes != 4096 || got.MaxConnections != 20 || time.Duration(got.IdleTimeout) != time.Minute || time.Duration(got.MaxLifetime) != 15*time.Minute {
+	if got == nil || got.Mechanism != credentials.MechanismBearerToken || got.MaxCredentialBytes != 4096 || got.MaxConnections != 20 || time.Duration(got.IdleTimeout) != time.Minute || time.Duration(got.MaxLifetime) != 15*time.Minute || got.DownstreamIdentity == nil || got.DownstreamIdentity.Source != downstreamIdentitySourceNATSUserID || got.DownstreamIdentity.Header != "X-Authenticated-User" || got.DownstreamIdentity.MaxValueBytes != 256 {
 		t.Fatalf("security context = %#v", got)
 	}
 }

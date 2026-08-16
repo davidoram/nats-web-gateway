@@ -173,14 +173,18 @@ func (connection *fakeNATSConnection) IsConnected() bool { return connection.con
 func (connection *fakeNATSConnection) Drain() error {
 	connection.drains.Add(1)
 	connection.connected = false
-	connection.options.ClosedCB(nil)
+	if connection.options.ClosedCB != nil {
+		connection.options.ClosedCB(nil)
+	}
 	return nil
 }
 
 func (connection *fakeNATSConnection) Close() {
 	connection.closes.Add(1)
 	connection.connected = false
-	connection.options.ClosedCB(nil)
+	if connection.options.ClosedCB != nil {
+		connection.options.ClosedCB(nil)
+	}
 }
 
 func TestHandlerCleanupBoundsDrain(t *testing.T) {

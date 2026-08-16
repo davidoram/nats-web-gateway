@@ -22,7 +22,9 @@ fail-closed validation rules are documented in
 [docs/configuration.md](docs/configuration.md).
 Supported HTTP-to-NATS authentication mappings and their proof-of-possession
 and termination semantics are documented in the
-[credential adapter guide](docs/credential-adapters.md).
+[credential adapter guide](docs/credential-adapters.md). Optional propagation
+of the server-authenticated NATS user is documented in the
+[downstream identity guide](docs/downstream-identity.md).
 
 The gateway provisions an instance-owned, least-privilege NATS connection,
 tracks reconnect readiness, and drains deterministically across overlapping
