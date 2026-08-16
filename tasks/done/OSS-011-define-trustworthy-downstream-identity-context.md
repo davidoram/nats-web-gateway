@@ -26,3 +26,7 @@ Provide direct tests for:
 - isolation across simultaneous users and overlapping Caddy reloads;
 - absence of identity leakage in diagnostics and telemetry;
 - the downstream service receiving exactly the NATS-authenticated identity.
+
+## Completion evidence
+
+- [PR #12](https://github.com/davidoram/nats-web-gateway/pull/12)
