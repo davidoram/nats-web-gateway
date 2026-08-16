@@ -50,9 +50,10 @@ type natsConnection interface {
 }
 
 type compiledRoute struct {
-	config Route
-	route  internalroutes.Route
-	pool   *securityContextPool
+	config  Route
+	route   internalroutes.Route
+	pool    *securityContextPool
+	streams chan struct{}
 }
 
 type connectFunc func(string, ...nats.Option) (natsConnection, error)
@@ -65,12 +66,14 @@ type connectionLifecycle struct {
 	stopping    bool
 	closed      chan struct{}
 	closedOnce  sync.Once
+	stopped     chan struct{}
+	stoppedOnce sync.Once
 	cleanup     sync.Once
 	drainWait   time.Duration
 	cleanupErr  error
 }
 
-var publishPermissionPattern = regexp.MustCompile(`(?i)permissions violation for publish to "([^"\s]+)"`)
+var subjectPermissionPattern = regexp.MustCompile(`(?i)permissions violation for (?:publish|subscription) to "([^"\s]+)"`)
 
 type permissionTracker struct {
 	mu      sync.Mutex
@@ -119,7 +122,7 @@ func (tracker *permissionTracker) handle(err error) {
 	if !errors.Is(err, nats.ErrPermissionViolation) {
 		return
 	}
-	match := publishPermissionPattern.FindStringSubmatch(err.Error())
+	match := subjectPermissionPattern.FindStringSubmatch(err.Error())
 	if len(match) != 2 {
 		return
 	}
@@ -148,6 +151,11 @@ func (lifecycle *connectionLifecycle) beginStopping() {
 	lifecycle.stopping = true
 	lifecycle.ready = false
 	lifecycle.stateMu.Unlock()
+	lifecycle.stoppedOnce.Do(func() {
+		if lifecycle.stopped != nil {
+			close(lifecycle.stopped)
+		}
+	})
 }
 
 func (lifecycle *connectionLifecycle) isReady() bool {
@@ -193,6 +201,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 	}
 	lifecycle := &connectionLifecycle{
 		closed:      make(chan struct{}),
+		stopped:     make(chan struct{}),
 		drainWait:   time.Duration(h.NATS.DrainTimeout),
 		permissions: newPermissionTracker(),
 	}
@@ -208,6 +217,9 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 			return fmt.Errorf("compile route %q: %w", configured.Name, compileErr)
 		}
 		candidate := compiledRoute{config: configured, route: compiled}
+		if configured.CoreSSE != nil {
+			candidate.streams = make(chan struct{}, configured.CoreSSE.MaxConnections)
+		}
 		if configured.SecurityContext != nil {
 			base := []nats.Option{
 				nats.Name("nats-web-gateway-protected"),
@@ -324,7 +336,7 @@ func parseCaddyfile(helper httpcaddyfile.Helper) (caddyhttp.MiddlewareHandler, e
 // outside this handler's declared surface continue through the Caddy chain.
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	for _, candidate := range h.compiledRoutes {
-		if candidate.config.StreamMode != streamModeRequestReply {
+		if candidate.config.StreamMode == streamModeJetStreamSSE {
 			continue
 		}
 		subject, matched, err := candidate.route.Match(r.Method, r.URL.EscapedPath(), r.URL.Query())
@@ -334,6 +346,9 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		if err != nil {
 			writeGatewayError(w, http.StatusBadRequest, "invalid request parameters")
 			return nil
+		}
+		if candidate.config.StreamMode == streamModeCoreSSE {
+			return h.serveCoreSSE(w, r, candidate, subject)
 		}
 		if h.lifecycle == nil || (candidate.pool == nil && !h.Ready()) || (candidate.pool != nil && !h.lifecycle.isServing()) {
 			writeGatewayError(w, http.StatusServiceUnavailable, "service unavailable")

@@ -195,12 +195,84 @@ parameter term query q ^[A-Za-z0-9_-]+$
 - ADR-32 service error codes are positive decimal application codes. They map
   only to explicitly configured HTTP statuses from 400 through 599; they are
   never treated directly as HTTP statuses.
-- `stream_mode` is mandatory and distinguishes `request_reply`, `core_sse`, and
-  `jetstream_sse`. The streaming modes intentionally remain distinct; their
-  bounded runtime policies are implemented by OSS-012 and OSS-013.
+- `stream_mode` is mandatory. `request_reply` and `core_sse` are implemented;
+  `jetstream_sse` is reserved for the separately specified resumable mode and
+  fails validation until OSS-013 is delivered.
 
 JSON duration values use Caddy duration strings such as `250ms` or `2s`. Byte
 limits are decimal integers in both JSON and the Caddyfile.
+
+## Core NATS live SSE
+
+`core_sse` exposes a plain Core NATS subscription as `text/event-stream`. It is
+ephemeral, best-effort, and at-most-once: clients receive only messages observed
+while their subscription is active. It has no persistence, acknowledgement,
+replay, event ID, or `Last-Event-ID` support. Disconnects, reloads, NATS
+reconnects, and buffer exhaustion can lose messages and clients must not treat
+reconnection as resume.
+
+Every live route declares all resource policy explicitly. `buffer_messages` and
+`buffer_bytes` jointly bound the per-client queue. `max_reply_bytes` bounds each
+individual event. `max_connections` is a per-route, per-handler-instance HTTP
+stream quota; excess attempts receive `429` before a subscription is created.
+`heartbeat_interval` sends SSE comment frames to keep an otherwise idle HTTP
+path active, and `max_duration` closes even a healthy stream so resources cannot
+be held indefinitely. The route `timeout` bounds subscription setup.
+
+```json
+{
+  "name": "live_events",
+  "path": "/events",
+  "methods": ["GET"],
+  "subject": "events.live",
+  "timeout": "2s",
+  "max_request_body_bytes": 1024,
+  "max_reply_bytes": 65536,
+  "response": {"mode": "binary", "content_type": "application/octet-stream"},
+  "stream_mode": "core_sse",
+  "core_sse": {
+    "buffer_messages": 32,
+    "buffer_bytes": 1048576,
+    "heartbeat_interval": "15s",
+    "max_duration": "15m",
+    "max_connections": 100
+  }
+}
+```
+
+The equivalent Caddyfile route is:
+
+```caddyfile
+route live_events {
+  path /events
+  methods GET
+  subject events.live
+  timeout 2s
+  max_request_body_bytes 1024
+  max_reply_bytes 65536
+  response_mode binary
+  response_content_type application/octet-stream
+  stream_mode core_sse
+  core_sse_buffer_messages 32
+  core_sse_buffer_bytes 1048576
+  core_sse_heartbeat_interval 15s
+  core_sse_max_duration 15m
+  core_sse_max_connections 100
+}
+```
+
+Each UTF-8 NATS payload becomes one SSE event, with embedded newlines emitted as
+multiple `data:` fields. Invalid UTF-8 or oversized messages end the stream with
+a bounded `error` event. When either queue bound is exceeded, the gateway ends
+that client stream with `event: error` and `data: slow consumer`; it never grows
+the queue, blocks NATS delivery, or pretends discarded Core NATS messages can be
+recovered. Client cancellation, handler cleanup, and maximum duration all
+unsubscribe and release any protected connection lease deterministically.
+
+Protected live routes use the same credential adapter and isolated, bounded
+NATS connection pool as protected request/reply routes. NATS subscribe
+permissions remain authoritative. `downstream_identity` is unavailable for a
+stream because there is no application request message on which to place it.
 
 ## Request/reply examples
 
