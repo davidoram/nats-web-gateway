@@ -16,6 +16,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
+	"github.com/davidoram/nats-web-gateway/internal/credentials"
 	internalroutes "github.com/davidoram/nats-web-gateway/internal/routes"
 	"github.com/davidoram/nats-web-gateway/internal/translation"
 	"github.com/nats-io/nats.go"
@@ -51,6 +52,7 @@ type natsConnection interface {
 type compiledRoute struct {
 	config Route
 	route  internalroutes.Route
+	pool   *securityContextPool
 }
 
 type connectFunc func(string, ...nats.Option) (natsConnection, error)
@@ -154,6 +156,12 @@ func (lifecycle *connectionLifecycle) isReady() bool {
 	return lifecycle.ready
 }
 
+func (lifecycle *connectionLifecycle) isServing() bool {
+	lifecycle.stateMu.RLock()
+	defer lifecycle.stateMu.RUnlock()
+	return !lifecycle.stopping
+}
+
 // CaddyModule returns the Caddy module information for Handler.
 func (Handler) CaddyModule() caddy.ModuleInfo {
 	return caddy.ModuleInfo{
@@ -236,7 +244,18 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 			connection.Close()
 			return fmt.Errorf("compile route %q: %w", configured.Name, compileErr)
 		}
-		h.compiledRoutes = append(h.compiledRoutes, compiledRoute{config: configured, route: compiled})
+		candidate := compiledRoute{config: configured, route: compiled}
+		if configured.SecurityContext != nil {
+			base := []nats.Option{
+				nats.Name("nats-web-gateway-protected"),
+				nats.Timeout(time.Duration(h.NATS.ConnectTimeout)),
+				nats.ReconnectWait(time.Duration(h.NATS.ReconnectWait)),
+				nats.MaxReconnects(h.NATS.MaxReconnects),
+				nats.DrainTimeout(time.Duration(h.NATS.DrainTimeout)),
+			}
+			candidate.pool = newSecurityContextPool(*configured.SecurityContext, strings.Join(h.NATS.URLs, ","), connector, base)
+		}
+		h.compiledRoutes = append(h.compiledRoutes, candidate)
 	}
 	lifecycle.setReady(connection.IsConnected())
 	h.lifecycle = lifecycle
@@ -257,6 +276,11 @@ func (h *Handler) Cleanup() error {
 	}
 	h.lifecycle.cleanup.Do(func() {
 		h.lifecycle.beginStopping()
+		for _, route := range h.compiledRoutes {
+			if route.pool != nil {
+				route.pool.close()
+			}
+		}
 		err := h.lifecycle.connection.Drain()
 		if errors.Is(err, nats.ErrConnectionClosed) {
 			return
@@ -305,7 +329,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 			writeGatewayError(w, http.StatusBadRequest, "invalid request parameters")
 			return nil
 		}
-		if h.lifecycle == nil || !h.Ready() {
+		if h.lifecycle == nil || (candidate.pool == nil && !h.Ready()) || (candidate.pool != nil && !h.lifecycle.isServing()) {
 			writeGatewayError(w, http.StatusServiceUnavailable, "service unavailable")
 			return nil
 		}
@@ -327,7 +351,34 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		}
 		timeoutCtx, timeoutCancel := context.WithTimeout(r.Context(), time.Duration(candidate.config.Timeout))
 		ctx, cancel := context.WithCancelCause(timeoutCtx)
-		requester := permissionAwareRequester{connection: h.lifecycle.connection, tracker: h.lifecycle.permissions, cancel: cancel}
+		connection := h.lifecycle.connection
+		tracker := h.lifecycle.permissions
+		var release func()
+		if candidate.pool != nil {
+			adapted, adaptErr := (credentials.Adapter{
+				Mechanism: candidate.config.SecurityContext.Mechanism, MaxCredentialBytes: candidate.config.SecurityContext.MaxCredentialBytes,
+			}).Adapt(r)
+			if adaptErr != nil {
+				cancel(nil)
+				timeoutCancel()
+				writeGatewayError(w, http.StatusUnauthorized, "unauthorized")
+				return nil
+			}
+			lease, acquireErr := candidate.pool.acquire(adapted)
+			if acquireErr != nil {
+				cancel(nil)
+				timeoutCancel()
+				if errors.Is(acquireErr, nats.ErrAuthorization) {
+					writeGatewayError(w, http.StatusUnauthorized, "unauthorized")
+				} else {
+					writeGatewayError(w, http.StatusServiceUnavailable, "service unavailable")
+				}
+				return nil
+			}
+			connection, tracker, release = lease.connection, lease.tracker, lease.release
+			defer release()
+		}
+		requester := permissionAwareRequester{connection: connection, tracker: tracker, cancel: cancel}
 		reply, err := translation.Execute(ctx, requester, translation.Request{
 			Subject: subject, Header: requestHeaders, Body: r.Body,
 		}, forwardHeaders, candidate.config.MaxRequestBodyBytes, candidate.config.MaxReplyBytes)

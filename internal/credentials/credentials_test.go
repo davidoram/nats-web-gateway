@@ -136,6 +136,50 @@ func TestTLSOptionsRequirePrivateKeyProof(t *testing.T) {
 	}
 }
 
+func TestAdaptDerivesStableDistinctContextKeysAndPreservesProof(t *testing.T) {
+	t.Parallel()
+	bearer := httptest.NewRequest(http.MethodGet, "https://example.test/", nil)
+	bearer.Header.Set("Authorization", "Bearer opaque-token")
+	first, err := (Adapter{Mechanism: MechanismBearerToken}).Adapt(bearer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := (Adapter{Mechanism: MechanismBearerToken}).Adapt(bearer)
+	if err != nil || first.Key != second.Key {
+		t.Fatalf("same credential keys differ: %x/%x (%v)", first.Key, second.Key, err)
+	}
+	basicRequest := httptest.NewRequest(http.MethodGet, "https://example.test/", nil)
+	basicRequest.SetBasicAuth("opaque-token", "password")
+	basicContext, err := (Adapter{Mechanism: MechanismUserPassword}).Adapt(basicRequest)
+	if err != nil || basicContext.Key == first.Key {
+		t.Fatalf("mechanism-scoped key = %x, bearer = %x (%v)", basicContext.Key, first.Key, err)
+	}
+
+	nkeyRequest := httptest.NewRequest(http.MethodGet, "https://example.test/", nil)
+	nkeyRequest = nkeyRequest.WithContext(WithNKeyProof(nkeyRequest.Context(), NKeyProof{
+		PublicKey: "UAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		Sign:      func(nonce []byte) ([]byte, error) { return nonce, nil },
+	}))
+	if _, err := (Adapter{Mechanism: MechanismNKey}).Adapt(nkeyRequest); err != nil {
+		t.Fatalf("adapt NKey: %v", err)
+	}
+
+	jwtRequest := httptest.NewRequest(http.MethodGet, "https://example.test/", nil)
+	jwtRequest = jwtRequest.WithContext(WithNKeyJWTProof(jwtRequest.Context(), NKeyJWTProof{
+		JWT:  func() (string, error) { return "user-jwt", nil },
+		Sign: func(nonce []byte) ([]byte, error) { return nonce, nil },
+	}))
+	if _, err := (Adapter{Mechanism: MechanismNKeyJWT}).Adapt(jwtRequest); err != nil {
+		t.Fatalf("adapt NKey JWT: %v", err)
+	}
+
+	tlsRequest := httptest.NewRequest(http.MethodGet, "https://example.test/", nil)
+	tlsRequest = tlsRequest.WithContext(WithTLSCertificate(tlsRequest.Context(), tls.Certificate{Certificate: [][]byte{{1, 2, 3}}, PrivateKey: stubSigner{}}))
+	if _, err := (Adapter{Mechanism: MechanismTLS}).Adapt(tlsRequest); err != nil {
+		t.Fatalf("adapt TLS: %v", err)
+	}
+}
+
 func TestAdaptersFailClosed(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
