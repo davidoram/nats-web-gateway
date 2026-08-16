@@ -178,12 +178,54 @@ func (h Handler) Validate() error {
 	return validateRoutes(h.Routes)
 }
 
-// Provision establishes this handler instance's operator connection. A failed
-// initial connection fails closed so Caddy never serves a configuration whose
-// NATS dependency or credentials were invalid at load time.
+// Provision compiles routes and establishes this handler instance's operator
+// connection when at least one route uses it. Protected-only handlers connect
+// lazily with each request's adapted security context.
 func (h *Handler) Provision(ctx caddy.Context) error {
 	if err := h.Validate(); err != nil {
 		return err
+	}
+	connector := h.connect
+	if connector == nil {
+		connector = func(url string, options ...nats.Option) (natsConnection, error) {
+			return nats.Connect(url, options...)
+		}
+	}
+	lifecycle := &connectionLifecycle{
+		closed:      make(chan struct{}),
+		drainWait:   time.Duration(h.NATS.DrainTimeout),
+		permissions: newPermissionTracker(),
+	}
+	hasOperatorRoute := false
+	h.compiledRoutes = make([]compiledRoute, 0, len(h.Routes))
+	for _, configured := range h.Routes {
+		parameters := make(map[string]internalroutes.Parameter, len(configured.Parameters))
+		for name, parameter := range configured.Parameters {
+			parameters[name] = internalroutes.Parameter{Source: parameter.Source, Name: parameter.Name, Pattern: parameter.Pattern}
+		}
+		compiled, compileErr := internalroutes.Compile(configured.Path, configured.Subject, configured.Methods, parameters)
+		if compileErr != nil {
+			return fmt.Errorf("compile route %q: %w", configured.Name, compileErr)
+		}
+		candidate := compiledRoute{config: configured, route: compiled}
+		if configured.SecurityContext != nil {
+			base := []nats.Option{
+				nats.Name("nats-web-gateway-protected"),
+				nats.Timeout(time.Duration(h.NATS.ConnectTimeout)),
+				nats.ReconnectWait(time.Duration(h.NATS.ReconnectWait)),
+				nats.MaxReconnects(h.NATS.MaxReconnects),
+				nats.DrainTimeout(time.Duration(h.NATS.DrainTimeout)),
+			}
+			candidate.pool = newSecurityContextPool(*configured.SecurityContext, strings.Join(h.NATS.URLs, ","), connector, base)
+		} else {
+			hasOperatorRoute = true
+		}
+		h.compiledRoutes = append(h.compiledRoutes, candidate)
+	}
+	if !hasOperatorRoute {
+		lifecycle.setReady(true)
+		h.lifecycle = lifecycle
+		return nil
 	}
 	replacer := caddy.NewReplacer()
 	username, password := "", ""
@@ -198,22 +240,9 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 			return fmt.Errorf("resolve NATS password: %w", err)
 		}
 	}
-	connector := h.connect
-	if connector == nil {
-		connector = func(url string, options ...nats.Option) (natsConnection, error) {
-			return nats.Connect(url, options...)
-		}
-	}
-	lifecycle := &connectionLifecycle{
-		closed:      make(chan struct{}),
-		drainWait:   time.Duration(h.NATS.DrainTimeout),
-		permissions: newPermissionTracker(),
-	}
 	options := []nats.Option{
-		nats.Name("nats-web-gateway"),
-		nats.Timeout(time.Duration(h.NATS.ConnectTimeout)),
-		nats.ReconnectWait(time.Duration(h.NATS.ReconnectWait)),
-		nats.MaxReconnects(h.NATS.MaxReconnects),
+		nats.Name("nats-web-gateway"), nats.Timeout(time.Duration(h.NATS.ConnectTimeout)),
+		nats.ReconnectWait(time.Duration(h.NATS.ReconnectWait)), nats.MaxReconnects(h.NATS.MaxReconnects),
 		nats.DrainTimeout(time.Duration(h.NATS.DrainTimeout)),
 		nats.DisconnectErrHandler(func(_ *nats.Conn, _ error) { lifecycle.setReady(false) }),
 		nats.ReconnectHandler(func(_ *nats.Conn) { lifecycle.setReady(true) }),
@@ -221,9 +250,7 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 			lifecycle.setReady(false)
 			lifecycle.closedOnce.Do(func() { close(lifecycle.closed) })
 		}),
-		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
-			lifecycle.permissions.handle(err)
-		}),
+		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) { lifecycle.permissions.handle(err) }),
 	}
 	if username != "" {
 		options = append(options, nats.UserInfo(username, password))
@@ -233,30 +260,6 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		return fmt.Errorf("connect to NATS: %w", err)
 	}
 	lifecycle.connection = connection
-	h.compiledRoutes = make([]compiledRoute, 0, len(h.Routes))
-	for _, configured := range h.Routes {
-		parameters := make(map[string]internalroutes.Parameter, len(configured.Parameters))
-		for name, parameter := range configured.Parameters {
-			parameters[name] = internalroutes.Parameter{Source: parameter.Source, Name: parameter.Name, Pattern: parameter.Pattern}
-		}
-		compiled, compileErr := internalroutes.Compile(configured.Path, configured.Subject, configured.Methods, parameters)
-		if compileErr != nil {
-			connection.Close()
-			return fmt.Errorf("compile route %q: %w", configured.Name, compileErr)
-		}
-		candidate := compiledRoute{config: configured, route: compiled}
-		if configured.SecurityContext != nil {
-			base := []nats.Option{
-				nats.Name("nats-web-gateway-protected"),
-				nats.Timeout(time.Duration(h.NATS.ConnectTimeout)),
-				nats.ReconnectWait(time.Duration(h.NATS.ReconnectWait)),
-				nats.MaxReconnects(h.NATS.MaxReconnects),
-				nats.DrainTimeout(time.Duration(h.NATS.DrainTimeout)),
-			}
-			candidate.pool = newSecurityContextPool(*configured.SecurityContext, strings.Join(h.NATS.URLs, ","), connector, base)
-		}
-		h.compiledRoutes = append(h.compiledRoutes, candidate)
-	}
 	lifecycle.setReady(connection.IsConnected())
 	h.lifecycle = lifecycle
 	return nil
@@ -280,6 +283,9 @@ func (h *Handler) Cleanup() error {
 			if route.pool != nil {
 				route.pool.close()
 			}
+		}
+		if h.lifecycle.connection == nil {
+			return
 		}
 		err := h.lifecycle.connection.Drain()
 		if errors.Is(err, nats.ErrConnectionClosed) {
@@ -364,11 +370,15 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 				writeGatewayError(w, http.StatusUnauthorized, "unauthorized")
 				return nil
 			}
-			lease, acquireErr := candidate.pool.acquire(adapted)
+			lease, acquireErr := candidate.pool.acquire(ctx, adapted)
 			if acquireErr != nil {
 				cancel(nil)
 				timeoutCancel()
-				if errors.Is(acquireErr, nats.ErrAuthorization) {
+				if errors.Is(acquireErr, context.Canceled) {
+					return nil
+				} else if errors.Is(acquireErr, context.DeadlineExceeded) {
+					writeGatewayError(w, http.StatusGatewayTimeout, "upstream request timed out")
+				} else if errors.Is(acquireErr, nats.ErrAuthorization) || credentialFailure(acquireErr) {
 					writeGatewayError(w, http.StatusUnauthorized, "unauthorized")
 				} else {
 					writeGatewayError(w, http.StatusServiceUnavailable, "service unavailable")
@@ -434,6 +444,11 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhtt
 		return err
 	}
 	return next.ServeHTTP(w, r)
+}
+
+func credentialFailure(err error) bool {
+	return errors.Is(err, credentials.ErrCredentialMissing) || errors.Is(err, credentials.ErrCredentialMalformed) ||
+		errors.Is(err, credentials.ErrCredentialAmbiguous) || errors.Is(err, credentials.ErrProofUnavailable)
 }
 
 func safeResponseHeaders(source nats.Header, allowlist []string) (http.Header, error) {

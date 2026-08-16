@@ -52,3 +52,8 @@ The real-NATS integration suite verifies bearer token, HTTP Basic, and NKey
 nonce authentication. JWT and TLS option construction is tested directly so
 their proof-bearing callbacks and private-key handles remain intact without
 placing long-lived secrets in repository fixtures.
+
+The NKey/JWT callback remains bounded and live for NATS reconnects rather than
+being replaced with a snapshot. When it rotates to a different JWT, the
+connection pool detects the changed credential identity, retires the prior
+entry, and prevents the refreshed JWT from inheriting that entry's connection.

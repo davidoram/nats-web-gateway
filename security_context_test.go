@@ -1,6 +1,7 @@
 package natswebgateway
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -40,25 +41,25 @@ func TestSecurityContextPoolIsolatesReusesAndBoundsConnections(t *testing.T) {
 
 	alice := adaptedBearer(t, "alice")
 	bob := adaptedBearer(t, "bob")
-	first, err := pool.acquire(alice)
+	first, err := pool.acquire(context.Background(), alice)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := pool.acquire(alice)
+	second, err := pool.acquire(context.Background(), alice)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.connection != second.connection || connects.Load() != 1 {
 		t.Fatalf("same context connection/connects = %p/%p/%d", first.connection, second.connection, connects.Load())
 	}
-	bobLease, err := pool.acquire(bob)
+	bobLease, err := pool.acquire(context.Background(), bob)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if bobLease.connection == first.connection || connects.Load() != 2 {
 		t.Fatal("distinct contexts shared a connection")
 	}
-	if _, err := pool.acquire(adaptedBearer(t, "charlie")); !errors.Is(err, errSecurityContextLimit) {
+	if _, err := pool.acquire(context.Background(), adaptedBearer(t, "charlie")); !errors.Is(err, errSecurityContextLimit) {
 		t.Fatalf("third context error = %v, want cardinality limit", err)
 	}
 	first.release()
@@ -79,14 +80,14 @@ func TestSecurityContextPoolExpiresIdleConnectionAndClosesOnCleanup(t *testing.T
 		return connection, nil
 	}
 	pool := newSecurityContextPool(SecurityContext{MaxConnections: 1, IdleTimeout: caddy.Duration(10 * time.Millisecond), MaxLifetime: caddy.Duration(time.Hour)}, "nats://example", connector, []nats.Option{nats.ClosedHandler(func(*nats.Conn) {})})
-	lease, err := pool.acquire(adaptedBearer(t, "alice"))
+	lease, err := pool.acquire(context.Background(), adaptedBearer(t, "alice"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	first := <-connections
 	lease.release()
 	eventually(t, time.Second, func() bool { return first.closes.Load() == 1 })
-	lease, err = pool.acquire(adaptedBearer(t, "alice"))
+	lease, err = pool.acquire(context.Background(), adaptedBearer(t, "alice"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,24 +112,128 @@ func TestSecurityContextPoolRetainsIdentityAcrossReconnect(t *testing.T) {
 	pool := newSecurityContextPool(SecurityContext{MaxConnections: 1, IdleTimeout: caddy.Duration(time.Hour), MaxLifetime: caddy.Duration(time.Hour)}, "nats://example", connector, []nats.Option{nats.ClosedHandler(func(*nats.Conn) {})})
 	t.Cleanup(pool.close)
 	adapted := adaptedBearer(t, "alice")
-	lease, err := pool.acquire(adapted)
+	lease, err := pool.acquire(context.Background(), adapted)
 	if err != nil {
 		t.Fatal(err)
 	}
 	lease.release()
 	connection.connected = false
-	if _, err := pool.acquire(adapted); !errors.Is(err, nats.ErrConnectionReconnecting) {
+	if _, err := pool.acquire(context.Background(), adapted); !errors.Is(err, nats.ErrConnectionReconnecting) {
 		t.Fatalf("reconnecting acquire error = %v", err)
 	}
 	if connection.closes.Load() != 0 {
 		t.Fatal("reconnecting identity-bound connection was replaced")
 	}
 	connection.connected = true
-	lease, err = pool.acquire(adapted)
+	lease, err = pool.acquire(context.Background(), adapted)
 	if err != nil || lease.connection != connection {
 		t.Fatalf("recovered acquire = %v, %p", err, lease)
 	}
 	lease.release()
+}
+
+func TestSecurityContextPoolConnectDoesNotBlockOtherContextsOrCleanup(t *testing.T) {
+	started := make(chan struct{})
+	unblock := make(chan struct{})
+	connector := func(_ string, options ...nats.Option) (natsConnection, error) {
+		configured := nats.GetDefaultOptions()
+		for _, option := range options {
+			if err := option(&configured); err != nil {
+				return nil, err
+			}
+		}
+		if configured.Token == "alice" {
+			close(started)
+			<-unblock
+		}
+		return &fakeNATSConnection{connected: true, options: configured}, nil
+	}
+	pool := newSecurityContextPool(SecurityContext{MaxConnections: 2, IdleTimeout: caddy.Duration(time.Hour), MaxLifetime: caddy.Duration(time.Hour)}, "nats://example", connector, []nats.Option{nats.ClosedHandler(func(*nats.Conn) {})})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	alice := adaptedBearer(t, "alice")
+	aliceResult := make(chan error, 1)
+	go func() {
+		_, err := pool.acquire(ctx, alice)
+		aliceResult <- err
+	}()
+	<-started
+	if err := <-aliceResult; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("blocked acquire error = %v", err)
+	}
+	bob, err := pool.acquire(context.Background(), adaptedBearer(t, "bob"))
+	if err != nil {
+		t.Fatalf("independent context acquire: %v", err)
+	}
+	bob.release()
+	closed := make(chan struct{})
+	go func() {
+		pool.close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup blocked behind an in-flight connection")
+	}
+	close(unblock)
+}
+
+func TestSecurityContextPoolRefreshesJWTAndRetiresOldIdentity(t *testing.T) {
+	var jwtMu sync.Mutex
+	jwt := "jwt-a"
+	request := httptest.NewRequest(http.MethodGet, "https://example.test", nil)
+	request = request.WithContext(credentials.WithNKeyJWTProof(request.Context(), credentials.NKeyJWTProof{
+		JWT: func() (string, error) {
+			jwtMu.Lock()
+			defer jwtMu.Unlock()
+			return jwt, nil
+		},
+		Sign: func(nonce []byte) ([]byte, error) { return nonce, nil },
+	}))
+	adapted, err := (credentials.Adapter{Mechanism: credentials.MechanismNKeyJWT}).Adapt(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var connections []*fakeNATSConnection
+	var observedJWTs []string
+	connector := func(_ string, options ...nats.Option) (natsConnection, error) {
+		configured := nats.GetDefaultOptions()
+		for _, option := range options {
+			if err := option(&configured); err != nil {
+				return nil, err
+			}
+		}
+		observed, callbackErr := configured.UserJWT()
+		if callbackErr != nil {
+			return nil, callbackErr
+		}
+		observedJWTs = append(observedJWTs, observed)
+		connection := &fakeNATSConnection{connected: true, options: configured}
+		connections = append(connections, connection)
+		return connection, nil
+	}
+	pool := newSecurityContextPool(SecurityContext{MaxConnections: 1, IdleTimeout: caddy.Duration(time.Hour), MaxLifetime: caddy.Duration(time.Hour)}, "nats://example", connector, []nats.Option{nats.ClosedHandler(func(*nats.Conn) {})})
+	t.Cleanup(pool.close)
+	first, err := pool.acquire(context.Background(), adapted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.release()
+	jwtMu.Lock()
+	jwt = "jwt-b"
+	jwtMu.Unlock()
+	second, err := pool.acquire(context.Background(), adapted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.release()
+	if len(observedJWTs) != 2 || observedJWTs[0] != "jwt-a" || observedJWTs[1] != "jwt-b" {
+		t.Fatalf("connected JWTs = %v", observedJWTs)
+	}
+	if connections[0].closes.Load() != 1 || connections[0] == connections[1] {
+		t.Fatal("rotated JWT reused or retained the old identity connection")
+	}
 }
 
 func TestProtectedRouteUsesNATSAuthenticationAndSubjectPermissions(t *testing.T) {
@@ -151,15 +256,15 @@ func TestProtectedRouteUsesNATSAuthenticationAndSubjectPermissions(t *testing.T)
 		t.Fatal(err)
 	}
 
-	t.Setenv("TEST_OPERATOR_PASSWORD", "operator")
 	route := validRoute("tenant", "/tenant/{id}", "tenant.{id}", http.MethodGet)
 	route.SecurityContext = &SecurityContext{Mechanism: credentials.MechanismUserPassword, MaxConnections: 2, IdleTimeout: caddy.Duration(time.Minute), MaxLifetime: caddy.Duration(time.Hour)}
 	handler := validHandler(route)
 	handler.NATS.URLs = []string{natsServer.ClientURL()}
-	handler.NATS.Username = "gateway"
-	handler.NATS.Password = "{env.TEST_OPERATOR_PASSWORD}"
 	if err := handler.Provision(caddy.Context{}); err != nil {
 		t.Fatal(err)
+	}
+	if handler.lifecycle.connection != nil || !handler.Ready() {
+		t.Fatalf("protected-only operator connection/ready = %v/%t", handler.lifecycle.connection, handler.Ready())
 	}
 	t.Cleanup(func() { _ = handler.Cleanup() })
 

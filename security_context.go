@@ -1,6 +1,7 @@
 package natswebgateway
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ var errSecurityContextLimit = errors.New("security context connection limit reac
 type securityContextPool struct {
 	mu       sync.Mutex
 	entries  map[[32]byte]*securityContextEntry
+	inflight map[[32]byte]*securityContextAttempt
 	config   SecurityContext
 	urls     string
 	connect  connectFunc
@@ -29,6 +31,13 @@ type securityContextEntry struct {
 	references int
 	expired    bool
 	timer      *time.Timer
+	identity   credentials.Context
+	generation uint64
+}
+
+type securityContextAttempt struct {
+	done chan struct{}
+	err  error
 }
 
 type securityContextLease struct {
@@ -39,55 +48,123 @@ type securityContextLease struct {
 
 func newSecurityContextPool(config SecurityContext, urls string, connect connectFunc, base []nats.Option) *securityContextPool {
 	return &securityContextPool{
-		entries: make(map[[32]byte]*securityContextEntry), config: config,
+		entries: make(map[[32]byte]*securityContextEntry), inflight: make(map[[32]byte]*securityContextAttempt), config: config,
 		urls: urls, connect: connect, base: base,
 	}
 }
 
-func (pool *securityContextPool) acquire(adapted credentials.Context) (*securityContextLease, error) {
-	pool.mu.Lock()
-	defer pool.mu.Unlock()
-	if pool.stopping {
-		return nil, nats.ErrConnectionClosed
-	}
-	now := time.Now()
-	if entry := pool.entries[adapted.Key]; entry != nil {
-		if entry.expired || now.Sub(entry.created) >= time.Duration(pool.config.MaxLifetime) {
-			entry.expired = true
-			if entry.references == 0 {
-				pool.removeLocked(adapted.Key, entry)
-			} else {
+func (pool *securityContextPool) acquire(ctx context.Context, adapted credentials.Context) (*securityContextLease, error) {
+	for {
+		if err := context.Cause(ctx); err != nil {
+			return nil, err
+		}
+		key, _, err := adapted.RefreshIdentity()
+		if err != nil {
+			return nil, err
+		}
+		pool.mu.Lock()
+		if pool.stopping {
+			pool.mu.Unlock()
+			return nil, nats.ErrConnectionClosed
+		}
+		now := time.Now()
+		pool.evictChangedLocked()
+		if entry := pool.entries[key]; entry != nil {
+			if entry.expired || now.Sub(entry.created) >= time.Duration(pool.config.MaxLifetime) {
+				entry.expired = true
+				if entry.references == 0 {
+					pool.removeLocked(key, entry)
+				} else {
+					pool.mu.Unlock()
+					return nil, nats.ErrConnectionReconnecting
+				}
+			} else if !entry.connection.IsConnected() {
+				pool.mu.Unlock()
 				return nil, nats.ErrConnectionReconnecting
+			} else {
+				entry.references++
+				entry.lastUsed = now
+				pool.scheduleLocked(key, entry)
+				lease := pool.leaseLocked(key, entry)
+				pool.mu.Unlock()
+				return lease, nil
 			}
-		} else if !entry.connection.IsConnected() {
-			return nil, nats.ErrConnectionReconnecting
-		} else {
-			entry.references++
-			entry.lastUsed = now
-			pool.scheduleLocked(adapted.Key, entry)
-			return pool.leaseLocked(adapted.Key, entry), nil
+		}
+		attempt := pool.inflight[key]
+		if attempt == nil {
+			if len(pool.entries)+len(pool.inflight) >= pool.config.MaxConnections {
+				pool.evictIdleLocked(now)
+			}
+			if len(pool.entries)+len(pool.inflight) >= pool.config.MaxConnections {
+				pool.mu.Unlock()
+				return nil, errSecurityContextLimit
+			}
+			attempt = &securityContextAttempt{done: make(chan struct{})}
+			pool.inflight[key] = attempt
+			go pool.connectContext(key, adapted, attempt, connectionTimeout(ctx))
+		}
+		pool.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, context.Cause(ctx)
+		case <-attempt.done:
+			if attempt.err != nil {
+				return nil, attempt.err
+			}
 		}
 	}
-	if len(pool.entries) >= pool.config.MaxConnections {
-		pool.evictIdleLocked(now)
+}
+
+func connectionTimeout(ctx context.Context) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return 0
 	}
-	if len(pool.entries) >= pool.config.MaxConnections {
-		return nil, errSecurityContextLimit
+	remaining := time.Until(deadline)
+	if remaining < 0 {
+		return time.Nanosecond
 	}
+	return remaining
+}
+
+func (pool *securityContextPool) connectContext(key [32]byte, adapted credentials.Context, attempt *securityContextAttempt, timeout time.Duration) {
 	tracker := newPermissionTracker()
 	options := append([]nats.Option{}, pool.base...)
-	options = append(options,
-		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) { tracker.handle(err) }),
-	)
+	options = append(options, nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) { tracker.handle(err) }))
 	options = append(options, adapted.Options...)
-	connection, err := pool.connect(pool.urls, options...)
-	if err != nil {
-		return nil, err
+	if timeout > 0 {
+		options = append(options, nats.Timeout(timeout))
 	}
-	entry := &securityContextEntry{connection: connection, tracker: tracker, created: now, lastUsed: now, references: 1}
-	pool.entries[adapted.Key] = entry
-	pool.scheduleLocked(adapted.Key, entry)
-	return pool.leaseLocked(adapted.Key, entry), nil
+	connection, err := pool.connect(pool.urls, options...)
+
+	pool.mu.Lock()
+	defer pool.mu.Unlock()
+	delete(pool.inflight, key)
+	if err != nil {
+		attempt.err = err
+		close(attempt.done)
+		return
+	}
+	observedKey, generation := adapted.ObservedIdentity()
+	if pool.stopping {
+		connection.Close()
+		attempt.err = nats.ErrConnectionClosed
+		close(attempt.done)
+		return
+	}
+	if pool.entries[observedKey] != nil {
+		connection.Close()
+		close(attempt.done)
+		return
+	}
+	now := time.Now()
+	entry := &securityContextEntry{
+		connection: connection, tracker: tracker, created: now, lastUsed: now,
+		identity: adapted, generation: generation,
+	}
+	pool.entries[observedKey] = entry
+	pool.scheduleLocked(observedKey, entry)
+	close(attempt.done)
 }
 
 func (pool *securityContextPool) leaseLocked(key [32]byte, entry *securityContextEntry) *securityContextLease {
@@ -161,6 +238,17 @@ func (pool *securityContextPool) evictIdleLocked(now time.Time) {
 	for key, entry := range pool.entries {
 		if entry.references == 0 && (entry.expired || now.Sub(entry.lastUsed) >= time.Duration(pool.config.IdleTimeout)) {
 			pool.removeLocked(key, entry)
+		}
+	}
+}
+
+func (pool *securityContextPool) evictChangedLocked() {
+	for key, entry := range pool.entries {
+		if entry.identity.IdentityChanged(entry.generation) {
+			entry.expired = true
+			if entry.references == 0 {
+				pool.removeLocked(key, entry)
+			}
 		}
 	}
 }

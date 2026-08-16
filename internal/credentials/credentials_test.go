@@ -148,6 +148,10 @@ func TestAdaptDerivesStableDistinctContextKeysAndPreservesProof(t *testing.T) {
 	if err != nil || first.Key != second.Key {
 		t.Fatalf("same credential keys differ: %x/%x (%v)", first.Key, second.Key, err)
 	}
+	key, generation, err := first.RefreshIdentity()
+	if err != nil || key != first.Key || generation != 0 || first.IdentityChanged(generation) {
+		t.Fatalf("static identity = %x/%d changed=%t (%v)", key, generation, first.IdentityChanged(generation), err)
+	}
 	basicRequest := httptest.NewRequest(http.MethodGet, "https://example.test/", nil)
 	basicRequest.SetBasicAuth("opaque-token", "password")
 	basicContext, err := (Adapter{Mechanism: MechanismUserPassword}).Adapt(basicRequest)
@@ -177,6 +181,42 @@ func TestAdaptDerivesStableDistinctContextKeysAndPreservesProof(t *testing.T) {
 	tlsRequest = tlsRequest.WithContext(WithTLSCertificate(tlsRequest.Context(), tls.Certificate{Certificate: [][]byte{{1, 2, 3}}, PrivateKey: stubSigner{}}))
 	if _, err := (Adapter{Mechanism: MechanismTLS}).Adapt(tlsRequest); err != nil {
 		t.Fatalf("adapt TLS: %v", err)
+	}
+}
+
+func TestAdaptNKeyJWTRefreshesBoundedIdentity(t *testing.T) {
+	t.Parallel()
+	jwt := "jwt-a"
+	request := httptest.NewRequest(http.MethodGet, "https://example.test/", nil)
+	request = request.WithContext(WithNKeyJWTProof(request.Context(), NKeyJWTProof{
+		JWT:  func() (string, error) { return jwt, nil },
+		Sign: func(nonce []byte) ([]byte, error) { return nonce, nil },
+	}))
+	security, err := (Adapter{Mechanism: MechanismNKeyJWT, MaxCredentialBytes: 8}).Adapt(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstKey, firstGeneration, err := security.RefreshIdentity()
+	if err != nil || firstKey != security.Key || firstGeneration != 0 {
+		t.Fatalf("initial identity = %x/%d (%v)", firstKey, firstGeneration, err)
+	}
+	options := nats.GetDefaultOptions()
+	if err := security.Options[0](&options); err != nil {
+		t.Fatal(err)
+	}
+	jwt = "jwt-b"
+	secondKey, secondGeneration, err := security.RefreshIdentity()
+	if err != nil || secondKey == firstKey || secondGeneration != firstGeneration+1 || !security.IdentityChanged(firstGeneration) {
+		t.Fatalf("refreshed identity = %x/%d changed=%t (%v)", secondKey, secondGeneration, security.IdentityChanged(firstGeneration), err)
+	}
+	observed, callbackErr := options.UserJWT()
+	observedKey, observedGeneration := security.ObservedIdentity()
+	if callbackErr != nil || observed != "jwt-b" || observedKey != secondKey || observedGeneration != secondGeneration {
+		t.Fatalf("observed JWT/identity = %q/%x/%d (%v)", observed, observedKey, observedGeneration, callbackErr)
+	}
+	jwt = "oversized"
+	if _, _, err := security.RefreshIdentity(); !errors.Is(err, ErrCredentialMalformed) {
+		t.Fatalf("oversized refresh error = %v", err)
 	}
 }
 

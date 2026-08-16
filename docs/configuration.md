@@ -95,10 +95,17 @@ nats_web_gateway {
 
 The `nats` block is required. `urls` contains one or more explicit `nats`,
 `tls`, `ws`, or `wss` server URLs without embedded credentials. The initial
-connection must authenticate successfully before Caddy accepts the
-configuration. A disconnected or reconnecting connection is not ready; a
-successful reconnect restores readiness. `max_reconnects: -1` retries for the
-life of the module instance, while a non-negative value bounds retry attempts.
+operator connection must authenticate successfully before Caddy accepts a
+configuration containing an unprotected route. A disconnected or reconnecting
+operator connection is not ready; a successful reconnect restores readiness.
+`max_reconnects: -1` retries for the life of the module instance, while a
+non-negative value bounds retry attempts.
+
+A handler whose routes are all protected does not open or require an operator
+connection. It is ready after configuration validation and authenticates each
+security context lazily on its first request. Request deadlines bound connection
+establishment; one slow authentication attempt does not block other security
+contexts or handler cleanup.
 
 Each handler instance owns its connection. During a Caddy reload, the new and
 old instances may overlap without sharing mutable state. Cleanup first stops
@@ -127,6 +134,9 @@ Idle connections close after `idle_timeout`, every connection is retired after
 `max_lifetime`, and handler cleanup closes the protected pools. Overlapping
 Caddy instances own independent pools. Set `max_lifetime` no longer than the
 authentication mechanism's expiry and revocation requirements.
+For `nkey_jwt`, the bounded JWT callback remains live for reconnects. If it
+returns a different JWT, the old cache identity is retired and cannot be reused
+for the refreshed credential.
 
 Each `parameter` has four arguments: template name, HTTP source (`path` or
 `query`), HTTP field name, and an explicitly anchored regular expression. A
