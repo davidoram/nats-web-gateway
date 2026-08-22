@@ -1269,7 +1269,9 @@ Presentations are: one Bearer `Authorization` value; HTTP Basic; or trusted
 in-process NKey signing proof, NKey JWT/signing callbacks, or TLS client
 certificate/private-key proof attached to the request context. Standard Caddy
 HTTP configuration does not create the latter three, so they are conditionally
-available only through an upstream integration. Mixed proofs fail as ambiguous.
+available only through an upstream integration. Requests that present
+credentials for more than one mechanism are rejected instead of having the
+gateway guess which credential to use.
 Refreshed NKey JWT identity retires its old pool entry. See the
 [credential adapter trust-boundary requirements](credential-adapters.md#trust-boundary-requirements)
 before using a proof-bearing mechanism.
