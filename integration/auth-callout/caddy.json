@@ -1,0 +1,9 @@
+{
+  "admin": {"disabled": true},
+  "apps": {"http": {"servers": {"auth": {"listen": [":8080"], "routes": [{
+    "match": [{"path": ["/protected"]}],
+    "handle": [{"handler": "nats_web_gateway", "nats": {"urls": ["nats://nats-auth:4222"], "connect_timeout": "2s", "reconnect_wait": "100ms", "max_reconnects": 0, "drain_timeout": "2s"},
+      "routes": [{"name":"hydra_auth_callout", "path":"/protected", "methods":["POST"], "subject":"auth.echo", "request_headers":["Content-Type"], "timeout":"2s", "max_request_body_bytes":1024, "max_reply_bytes":1024, "response":{"mode":"binary", "content_type":"text/plain"}, "stream_mode":"request_reply", "security_context":{"mechanism":"bearer_token", "max_credential_bytes":4096, "max_connections":8, "idle_timeout":"100ms", "max_lifetime":"200ms"}}]
+    }, {"handler":"static_response", "status_code":404}]
+  }]}}}}
+}
