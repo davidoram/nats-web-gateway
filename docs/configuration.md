@@ -392,47 +392,78 @@ The exact clearable names are:
 
 ### `extend.parameters` / `extend_parameter`
 
-JSON: optional map `extend.parameters`. Caddyfile: repeat
+**JSON:** Optional map `extend.parameters`.
+
+**Caddyfile:** Repeat
 `extend_parameter <template> <path|query> <HTTP-name> <anchored-regexp>`.
-Default: none. Use it when a shared subject template needs one additional
-validated value. It adds parameters after replacement; inherited or sibling
-keys cannot be duplicated. Normal parameter validation applies. Example:
-`extend_parameter view query view ^[A-Za-z0-9_-]+$` adds the query parameter
-needed by a subject such as `orders.{id}.{view}`.
+
+**Default:** No added parameters.
+
+Use this setting when a shared subject template needs one additional validated
+value. It adds parameters after replacement; inherited or sibling keys cannot
+be duplicated. Normal parameter validation applies.
+
+**Example:** `extend_parameter view query view ^[A-Za-z0-9_-]+$` adds the query
+parameter needed by a subject such as `orders.{id}.{view}`.
 
 ### `extend.request_headers` / `extend_request_headers`
 
-JSON: optional string array `extend.request_headers`. Caddyfile:
-`extend_request_headers <Header>...`. Default: none. Appends to the inherited
-request allowlist. Use it, for example, to add `Traceparent` on one traced route
-while retaining shared `Content-Type`. Duplicates and forbidden headers fail.
-Example: `extend_request_headers Traceparent`.
+**JSON:** Optional string array `extend.request_headers`.
+
+**Caddyfile:** `extend_request_headers <Header>...`.
+
+**Default:** No added request headers.
+
+This appends to the inherited request allowlist. Use it, for example, to add
+`Traceparent` on one traced route while retaining shared `Content-Type`.
+Duplicates and forbidden headers fail.
+
+**Example:** `extend_request_headers Traceparent`.
 
 ### `extend.response_headers` / `extend_response_headers`
 
-JSON: optional string array `extend.response_headers`. Caddyfile:
-`extend_response_headers <Header>...`. Default: none. Appends to
-`response.headers`. Use it when one endpoint returns an extra safe header, such
-as `ETag`, without copying the base response allowlist. Normal header safety
-rules apply. Example: `extend_response_headers ETag`.
+**JSON:** Optional string array `extend.response_headers`.
+
+**Caddyfile:** `extend_response_headers <Header>...`.
+
+**Default:** No added response headers.
+
+This appends to `response.headers`. Use it when one endpoint returns an extra
+safe header, such as `ETag`, without copying the base response allowlist. Normal
+header safety rules apply.
+
+**Example:** `extend_response_headers ETag`.
 
 ### `extend.representations` / `extend_response_representations`
 
-JSON: optional string array `extend.representations`. Caddyfile:
-`extend_response_representations <media-type>...`. Default: none. Appends media
-types. Use it when one endpoint supports an additional declared format while
-keeping the profile's formats. The final route must enable negotiation and
-remain unique and mode-compatible. Example:
+**JSON:** Optional string array `extend.representations`.
+
+**Caddyfile:** `extend_response_representations <media-type>...`.
+
+**Default:** No added representations.
+
+This appends media types. Use it when one endpoint supports an additional
+declared format while keeping the profile's formats. The final route must enable
+negotiation, and every representation must remain unique and compatible with
+the response mode.
+
+**Example:**
 `extend_response_representations application/vnd.example.v2+json`.
 
 ### `extend.service_error_statuses` / `extend_service_error_status`
 
-JSON: optional object `extend.service_error_statuses`. Caddyfile: repeat
-`extend_service_error_status <code> <status>`. Default: none. Adds mappings but
-cannot replace an existing code; use normal map replacement for that. Use it
-when one service endpoint adds an application error that the common profile does
-not have. Example: `extend_service_error_status 4041 404` maps that endpoint's
-“not found” application code to HTTP 404.
+**JSON:** Optional object `extend.service_error_statuses`.
+
+**Caddyfile:** Repeat `extend_service_error_status <code> <status>`.
+
+**Default:** No added service-error mappings.
+
+This adds mappings but cannot replace an existing code; use normal map
+replacement for that. Use it when one service endpoint adds an application
+error that the common profile does not have.
+
+**Example:** `extend_service_error_status 4041 404` maps that endpoint's “not
+found” application code to HTTP 404.
 
 ## Top-level NATS settings
 
