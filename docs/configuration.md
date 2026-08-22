@@ -359,18 +359,36 @@ are configured.
 
 The exact clearable names are:
 
-```text
-subject parameters request_headers timeout max_request_body_bytes max_reply_bytes
-response response.mode response.headers response.content_type
-response.representations response.negotiate_accept response.service_error_statuses
-stream_mode core_sse core_sse.buffer_messages core_sse.buffer_bytes
-core_sse.heartbeat_interval core_sse.max_duration core_sse.max_connections
-security_context security_context.mechanism security_context.max_credential_bytes
-security_context.max_connections security_context.idle_timeout
-security_context.max_lifetime security_context.downstream_identity
-security_context.downstream_identity.source security_context.downstream_identity.header
-security_context.downstream_identity.max_value_bytes
-```
+- [`subject`](#subject)
+- [`parameters`](#parameters)
+- [`request_headers`](#request_headers)
+- [`timeout`](#timeout)
+- [`max_request_body_bytes`](#max_request_body_bytes)
+- [`max_reply_bytes`](#max_reply_bytes)
+- [`response`](#response)
+- [`response.mode`](#responsemode--response_mode)
+- [`response.headers`](#responseheaders--response_headers)
+- [`response.content_type`](#responsecontent_type--response_content_type)
+- [`response.representations`](#responserepresentations--response_representations)
+- [`response.negotiate_accept`](#responsenegotiate_accept--negotiate_accept)
+- [`response.service_error_statuses`](#responseservice_error_statuses--service_error_status)
+- [`stream_mode`](#stream_mode)
+- [`core_sse`](#core_sse)
+- [`core_sse.buffer_messages`](#core_ssebuffer_messages--core_sse_buffer_messages)
+- [`core_sse.buffer_bytes`](#core_ssebuffer_bytes--core_sse_buffer_bytes)
+- [`core_sse.heartbeat_interval`](#core_sseheartbeat_interval--core_sse_heartbeat_interval)
+- [`core_sse.max_duration`](#core_ssemax_duration--core_sse_max_duration)
+- [`core_sse.max_connections`](#core_ssemax_connections--core_sse_max_connections)
+- [`security_context`](#security_context)
+- [`security_context.mechanism`](#security_contextmechanism--credential_mechanism)
+- [`security_context.max_credential_bytes`](#security_contextmax_credential_bytes--max_credential_bytes)
+- [`security_context.max_connections`](#security_contextmax_connections--max_security_context_connections)
+- [`security_context.idle_timeout`](#security_contextidle_timeout--security_context_idle_timeout)
+- [`security_context.max_lifetime`](#security_contextmax_lifetime--security_context_max_lifetime)
+- [`security_context.downstream_identity`](#security_contextdownstream_identity)
+- [`security_context.downstream_identity.source`](#downstream_identitysource--downstream_identity_source)
+- [`security_context.downstream_identity.header`](#downstream_identityheader--downstream_identity_header)
+- [`security_context.downstream_identity.max_value_bytes`](#downstream_identitymax_value_bytes--max_downstream_identity_bytes)
 
 ### `extend.parameters` / `extend_parameter`
 
