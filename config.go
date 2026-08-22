@@ -44,6 +44,9 @@ type Route struct {
 	Name                string               `json:"name"`
 	Path                string               `json:"path"`
 	Methods             []string             `json:"methods"`
+	Profile             string               `json:"profile,omitempty"`
+	Clear               []string             `json:"clear,omitempty"`
+	Extend              *RouteExtensions     `json:"extend,omitempty"`
 	Subject             string               `json:"subject"`
 	Parameters          map[string]Parameter `json:"parameters,omitempty"`
 	RequestHeaders      []string             `json:"request_headers,omitempty"`
@@ -54,6 +57,24 @@ type Route struct {
 	StreamMode          string               `json:"stream_mode"`
 	CoreSSE             *CoreSSE             `json:"core_sse,omitempty"`
 	SecurityContext     *SecurityContext     `json:"security_context,omitempty"`
+}
+
+// RouteProfile is a named, reusable collection of route policy. Identity and
+// HTTP matching fields deliberately cannot be inherited.
+type RouteProfile struct {
+	Name    string `json:"name"`
+	Extends string `json:"extends,omitempty"`
+	Route
+}
+
+// RouteExtensions adds entries to inherited collection fields. Ordinary route
+// fields replace inherited collections; clear removes them before validation.
+type RouteExtensions struct {
+	Parameters           map[string]Parameter `json:"parameters,omitempty"`
+	RequestHeaders       []string             `json:"request_headers,omitempty"`
+	ResponseHeaders      []string             `json:"response_headers,omitempty"`
+	Representations      []string             `json:"representations,omitempty"`
+	ServiceErrorStatuses map[string]int       `json:"service_error_statuses,omitempty"`
 }
 
 // CoreSSE declares bounded runtime policy for an ephemeral Core NATS stream.
@@ -638,6 +659,16 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			h.Routes = append(h.Routes, route)
 			continue
 		}
+		if d.Val() == "route_profile" {
+			configured, err := unmarshalRoute(d.NewFromNextSegment())
+			if err != nil {
+				return err
+			}
+			profile := RouteProfile{Name: configured.Name, Extends: configured.Profile, Route: configured}
+			profile.Route.Name, profile.Route.Profile = "", ""
+			h.RouteProfiles = append(h.RouteProfiles, profile)
+			continue
+		}
 		if _, exists := seenOptions[d.Val()]; exists {
 			return d.Errf("NATS option %q already specified", d.Val())
 		}
@@ -682,7 +713,17 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			return d.Errf("unrecognized subdirective %q", d.Val())
 		}
 	}
-	return h.Validate()
+	if err := h.Validate(); err != nil {
+		return err
+	}
+	// Caddyfile adaptation emits the fully resolved effective routes so operators
+	// can inspect exactly what will serve traffic.
+	resolved, err := h.resolvedRoutes()
+	if err != nil {
+		return err
+	}
+	h.Routes, h.RouteProfiles = resolved, nil
+	return nil
 }
 
 func parseDuration(d *caddyfile.Dispenser, target *caddy.Duration) error {
@@ -706,13 +747,62 @@ func unmarshalRoute(d *caddyfile.Dispenser) (Route, error) {
 		return route, d.ArgErr()
 	}
 	for d.NextBlock(0) {
-		if d.Val() != "parameter" && d.Val() != "service_error_status" {
+		if d.Val() != "parameter" && d.Val() != "service_error_status" && d.Val() != "extend_parameter" && d.Val() != "extend_service_error_status" {
 			if _, exists := seenOptions[d.Val()]; exists {
 				return route, d.Errf("route option %q already specified", d.Val())
 			}
 			seenOptions[d.Val()] = struct{}{}
 		}
 		switch d.Val() {
+		case "use":
+			if !d.AllArgs(&route.Profile) {
+				return route, d.ArgErr()
+			}
+		case "extends":
+			if !d.AllArgs(&route.Profile) {
+				return route, d.ArgErr()
+			}
+		case "clear":
+			route.Clear = d.RemainingArgs()
+			if len(route.Clear) == 0 {
+				return route, d.ArgErr()
+			}
+		case "extend_request_headers":
+			ensureRouteExtensions(&route).RequestHeaders = d.RemainingArgs()
+		case "extend_response_headers":
+			ensureRouteExtensions(&route).ResponseHeaders = d.RemainingArgs()
+		case "extend_response_representations":
+			ensureRouteExtensions(&route).Representations = d.RemainingArgs()
+		case "extend_parameter":
+			var name, source, sourceName, expression string
+			if !d.AllArgs(&name, &source, &sourceName, &expression) {
+				return route, d.ArgErr()
+			}
+			ext := ensureRouteExtensions(&route)
+			if ext.Parameters == nil {
+				ext.Parameters = map[string]Parameter{}
+			}
+			if _, exists := ext.Parameters[name]; exists {
+				return route, d.Errf("extended parameter %q already specified", name)
+			}
+			ext.Parameters[name] = Parameter{Source: source, Name: sourceName, Pattern: expression}
+		case "extend_service_error_status":
+			var code, statusValue string
+			if !d.AllArgs(&code, &statusValue) {
+				return route, d.ArgErr()
+			}
+			status, err := strconv.Atoi(statusValue)
+			if err != nil {
+				return route, d.Errf("invalid HTTP status %q", statusValue)
+			}
+			ext := ensureRouteExtensions(&route)
+			if ext.ServiceErrorStatuses == nil {
+				ext.ServiceErrorStatuses = map[string]int{}
+			}
+			if _, exists := ext.ServiceErrorStatuses[code]; exists {
+				return route, d.Errf("extended service error code %q already specified", code)
+			}
+			ext.ServiceErrorStatuses[code] = status
 		case "path":
 			if !d.AllArgs(&route.Path) {
 				return route, d.ArgErr()
@@ -869,6 +959,13 @@ func ensureSecurityContext(route *Route) *SecurityContext {
 		route.SecurityContext = new(SecurityContext)
 	}
 	return route.SecurityContext
+}
+
+func ensureRouteExtensions(route *Route) *RouteExtensions {
+	if route.Extend == nil {
+		route.Extend = new(RouteExtensions)
+	}
+	return route.Extend
 }
 
 func ensureCoreSSE(route *Route) *CoreSSE {

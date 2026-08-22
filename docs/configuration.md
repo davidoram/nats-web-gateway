@@ -9,6 +9,88 @@ whose method and path do not match a declared route passes to the next Caddy
 handler. A matched `request_reply` route publishes exactly once and never
 retries automatically.
 
+## Reusable route profiles
+
+Named `route_profiles` share route policy without hiding the HTTP surface.
+`name`, `path`, and `methods` are always written on each route and are forbidden
+in a profile. The shareable inventory is `subject`, `parameters`,
+`request_headers`, `timeout`, `max_request_body_bytes`, `max_reply_bytes`,
+`response` (all nested fields), `stream_mode`, `core_sse` (all nested fields),
+and `security_context` (including credential, lifecycle, and downstream identity
+fields). A profile may `extends` one other profile; cycles, duplicate names, and
+unknown references fail before traffic is served.
+
+Omission inherits. A value written by a child profile or route overrides the
+corresponding field; nested objects merge field by field. Lists and maps replace
+the inherited collection, including replacement with an empty collection.
+`clear` explicitly removes a field (or a nested field such as
+`response.negotiate_accept`), after which ordinary effective-route validation
+applies. `extend` adds entries to supported collections: `parameters`,
+`request_headers`, `response_headers`, `representations`, and
+`service_error_statuses`. Extension that creates a duplicate or unsafe value is
+rejected by normal validation. This makes replacement, clearing, and extension
+distinct and deterministic.
+
+```json
+{
+  "route_profiles": [{
+    "name": "json_api",
+    "request_headers": ["Content-Type"],
+    "timeout": "2s",
+    "max_request_body_bytes": 1048576,
+    "max_reply_bytes": 1048576,
+    "response": {"mode": "json", "content_type": "application/json"},
+    "stream_mode": "request_reply"
+  }],
+  "routes": [{
+    "name": "list_orders",
+    "path": "/orders",
+    "methods": ["GET"],
+    "profile": "json_api",
+    "subject": "orders.list",
+    "extend": {"request_headers": ["Traceparent"]}
+  }]
+}
+```
+
+The equivalent Caddyfile syntax is:
+
+```caddyfile
+route_profile json_api {
+  request_headers Content-Type
+  timeout 2s
+  max_request_body_bytes 1048576
+  max_reply_bytes 1048576
+  response_mode json
+  response_content_type application/json
+  stream_mode request_reply
+}
+route list_orders {
+  use json_api
+  path /orders
+  methods GET
+  subject orders.list
+  extend_request_headers Traceparent
+}
+```
+
+Profiles can use `extends parent`. Caddyfile adaptation emits fully resolved
+routes and removes the profile declarations, making the effective configuration
+directly inspectable. JSON configurations are resolved and validated during
+provisioning. Existing inline routes remain valid; migrating consists of moving
+shareable fields into a profile and adding `profile` (JSON) or `use`
+(Caddyfile). Reloads build new profiles, pools, and quotas in the new handler;
+the old handler retains and drains only its own resolved configuration.
+Removing or renaming a referenced profile makes the reload fail closed, leaving
+the prior Caddy configuration active.
+
+Routes with identical effective security contexts share one handler-owned,
+bounded credential pool, and identical Core SSE policies share one quota. A
+security or lifecycle override changes the effective key and therefore creates
+a distinct pool. Credential digests remain part of pool lookup, so distinct
+credential presentations never share a connection. No mutable profile, pool,
+or quota state is shared across overlapping handler instances.
+
 ## JSON
 
 ```json

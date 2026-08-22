@@ -54,3 +54,7 @@ Provide direct tests for:
 
 - OSS-010 — Enforce per-security-context NATS authorization.
 - OSS-012 — Implement Core NATS to SSE streaming.
+
+## Completion evidence
+
+- [PR #15](https://github.com/davidoram/nats-web-gateway/pull/15)
