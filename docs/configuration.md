@@ -1051,7 +1051,28 @@ A route may inherit, replace, clear, or extend the map. A code is a positive dec
 `400`–`599`. Unmapped or malformed ADR-32 errors return `502`; descriptions are
 not exposed.
 
-**Example:** `service_error_status 4041 404`.
+**Example:** Map validation, not-found, and conflict application codes to
+different HTTP statuses:
+
+```json
+{
+  "response": {
+    "service_error_statuses": {
+      "4001": 400,
+      "4041": 404,
+      "4091": 409
+    }
+  }
+}
+```
+
+The equivalent Caddyfile directives are:
+
+```caddyfile
+service_error_status 4001 400
+service_error_status 4041 404
+service_error_status 4091 409
+```
 
 ## Streaming settings
 
