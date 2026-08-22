@@ -82,7 +82,7 @@ func Integration() (resultErr error) {
 			resultErr = errors.Join(resultErr, fmt.Errorf("stop local integration environment: %w", err))
 		}
 	}()
-	if err := run("go", "test", "-count=1", "-tags=integration", "./...", "-run", "^TestLocalEnvironment$"); err != nil {
+	if err := run("go", "test", "-count=1", "-tags=integration", "./...", "-skip", "^TestHydraAuthCallout$"); err != nil {
 		logIntegrationServices(compose)
 		return err
 	}
