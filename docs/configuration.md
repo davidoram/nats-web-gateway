@@ -1255,9 +1255,13 @@ and pool/connectivity failure `503`.
 
 **Default:** None.
 
-It may be inherited or cleared. Values are `bearer_token`, `user_password`, `nkey`, `nkey_jwt`, and
-`tls`. Exactly one presentation is accepted; ambiguous input is rejected. The adapter presents proof;
-NATS authenticates it.
+It may be inherited or cleared. Choose the mechanism that matches the credential
+available from the HTTP request or a trusted transport integration. The
+[credential adapter mappings](credential-adapters.md#supported-mappings) describe
+the accepted input, the NATS option the gateway creates, and the proof required
+by each mechanism. Values are `bearer_token`, `user_password`, `nkey`,
+`nkey_jwt`, and `tls`. Exactly one presentation is accepted; ambiguous input is
+rejected. The adapter presents proof; NATS authenticates it.
 
 **Example:** `credential_mechanism bearer_token`.
 
@@ -1266,7 +1270,19 @@ in-process NKey signing proof, NKey JWT/signing callbacks, or TLS client
 certificate/private-key proof attached to the request context. Standard Caddy
 HTTP configuration does not create the latter three, so they are conditionally
 available only through an upstream integration. Mixed proofs fail as ambiguous.
-Refreshed NKey JWT identity retires its old pool entry.
+Refreshed NKey JWT identity retires its old pool entry. See the
+[credential adapter trust-boundary requirements](credential-adapters.md#trust-boundary-requirements)
+before using a proof-bearing mechanism.
+
+For an Auth Callout that validates OAuth access tokens, choose `bearer_token`.
+The HTTP caller sends `Authorization: Bearer <token>`; the gateway passes that
+opaque value to NATS as the CONNECT token, and NATS sends the authentication
+request to the Auth Callout. The callout, rather than the gateway, validates the
+token and assigns the NATS account and subject permissions. The
+[Hydra Auth Callout integration](auth-callout-hydra-integration.md) demonstrates
+this flow. Choose another mechanism only when the Auth Callout expects that NATS
+credential type and the HTTP or trusted transport integration can preserve its
+required proof.
 
 ### `security_context.max_credential_bytes` / `max_credential_bytes`
 
