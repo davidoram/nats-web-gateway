@@ -60,3 +60,7 @@ Run and report:
 - OSS-003 — Build the local integration environment.
 - OSS-009 — Implement HTTP-to-NATS credential adapters.
 - OSS-010 — Enforce per-security-context NATS authorization.
+
+## Completion evidence
+
+- [PR #14](https://github.com/davidoram/nats-web-gateway/pull/14)
