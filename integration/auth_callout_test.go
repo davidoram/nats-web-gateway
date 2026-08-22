@@ -84,12 +84,12 @@ func TestHydraAuthCallout(t *testing.T) {
 		}
 	})
 
-	t.Run("revoked token is inactive", func(t *testing.T) {
+	t.Run("Hydra revocation denies subsequent valid requests", func(t *testing.T) {
 		form := url.Values{"token": {token}}
 		req, _ := http.NewRequest(http.MethodPost, hydraPublicURL+"/oauth2/revoke", strings.NewReader(form.Encode()))
 		req.SetBasicAuth(fixtureClientID, fixtureClientSecret)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := authIntegrationHTTPClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -100,9 +100,12 @@ func TestHydraAuthCallout(t *testing.T) {
 		// NATS authenticates at connection establishment. Wait for the fixture's
 		// deliberately short bounded connection lifetime before reconnecting.
 		time.Sleep(300 * time.Millisecond)
-		status, body := protected(t, "Bearer "+token)
-		if status != http.StatusUnauthorized || strings.Contains(body, token) {
-			t.Fatalf("response = %d %q", status, body)
+		for attempt := 1; attempt <= 3; attempt++ {
+			status, body := protected(t, "Bearer "+token)
+			if status != http.StatusUnauthorized || body != "{\"error\":\"unauthorized\"}\n" || strings.Contains(body, token) {
+				t.Fatalf("post-revocation response %d = %d %q", attempt, status, body)
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
 	})
 }
