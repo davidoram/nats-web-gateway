@@ -82,8 +82,31 @@ func Integration() (resultErr error) {
 			resultErr = errors.Join(resultErr, fmt.Errorf("stop local integration environment: %w", err))
 		}
 	}()
-	if err := run("go", "test", "-count=1", "-tags=integration", "./..."); err != nil {
+	if err := run("go", "test", "-count=1", "-tags=integration", "./...", "-skip", "^TestHydraAuthCallout$"); err != nil {
 		logIntegrationServices(compose)
+		return err
+	}
+	if err := authCalloutIntegration(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func authCalloutIntegration() (resultErr error) {
+	compose, err := composeCommandFor("compose.auth-callout.yml")
+	if err != nil {
+		return err
+	}
+	if err := run(compose[0], append(compose[1:], "up", "--detach")...); err != nil {
+		return fmt.Errorf("start Auth Callout integration environment: %w", err)
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, run(compose[0], append(compose[1:], "down", "--volumes", "--remove-orphans")...))
+	}()
+	if err := run("go", "test", "-count=1", "-tags=integration", "./integration", "-run", "TestHydraAuthCallout"); err != nil {
+		for _, service := range []string{"hydra", "hydra-cli", "hydra-cli-wrong-audience", "hydra-cli-wrong-scope", "nats-auth", "auth-callout", "auth-echo", "caddy-auth"} {
+			_ = run(compose[0], append(compose[1:], "logs", service)...)
+		}
 		return err
 	}
 	return nil
@@ -124,15 +147,25 @@ func buildIntegrationBinaries() error {
 	if err := sh.RunWithV(env, "go", "build", "-o", filepath.FromSlash("build/integration/pets-service"), "./examples/pets-service"); err != nil {
 		return fmt.Errorf("build Linux Pets example services: %w", err)
 	}
+	if err := sh.RunWithV(env, "go", "build", "-o", filepath.FromSlash("build/integration/auth-callout"), "./cmd/auth-callout"); err != nil {
+		return fmt.Errorf("build Auth Callout fixture: %w", err)
+	}
+	if err := sh.RunWithV(env, "go", "build", "-o", filepath.FromSlash("build/integration/auth-echo"), "./cmd/auth-echo"); err != nil {
+		return fmt.Errorf("build Auth Callout application fixture: %w", err)
+	}
 	return nil
 }
 
 func composeCommand() ([]string, error) {
+	return composeCommandFor("compose.yml")
+}
+
+func composeCommandFor(file string) ([]string, error) {
 	if _, err := exec.LookPath("docker"); err == nil {
-		return []string{"docker", "compose", "--file", "compose.yml"}, nil
+		return []string{"docker", "compose", "--file", file}, nil
 	}
 	if _, err := exec.LookPath("podman-compose"); err == nil {
-		return []string{"podman-compose", "--file", "compose.yml"}, nil
+		return []string{"podman-compose", "--file", file}, nil
 	}
 	return nil, errors.New("integration requires docker compose or podman-compose")
 }
