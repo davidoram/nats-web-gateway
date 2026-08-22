@@ -108,12 +108,13 @@ func TestHydraAuthCallout(t *testing.T) {
 func requestToken(t *testing.T, clientID, clientSecret, scope, audience string) string {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
+	client := &http.Client{Timeout: 2 * time.Second}
 	for time.Now().Before(deadline) {
 		form := url.Values{"grant_type": {"client_credentials"}, "scope": {scope}, "audience": {audience}}
 		req, _ := http.NewRequest(http.MethodPost, hydraPublicURL+"/oauth2/token", strings.NewReader(form.Encode()))
 		req.SetBasicAuth(clientID, clientSecret)
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := client.Do(req)
 		if err == nil {
 			var result struct {
 				AccessToken string `json:"access_token"`
