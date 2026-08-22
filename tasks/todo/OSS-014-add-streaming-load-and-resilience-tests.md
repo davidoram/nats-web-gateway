@@ -2,5 +2,4 @@
 
 ## HTTP streaming
 
-Exercise slow clients, reconnects, server restarts, Caddy reloads, buffer
-exhaustion, cancellation races, and resource-leak detection.
+Exercise slow clients, reconnects, server restarts, Caddy reloads, buffer exhaustion, cancellation races, and resource-leak detection.

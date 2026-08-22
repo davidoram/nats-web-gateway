@@ -2,5 +2,4 @@
 
 ## Production readiness
 
-Provide a Docker image, example application, example service, Caddyfile,
-curl/browser walkthrough, troubleshooting guide, and security guidance.
+Provide a Docker image, example application, example service, Caddyfile, curl/browser walkthrough, troubleshooting guide, and security guidance.

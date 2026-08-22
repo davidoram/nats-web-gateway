@@ -2,5 +2,4 @@
 
 ## Production readiness
 
-Integrate structured logs, bounded-cardinality metrics, trace propagation,
-readiness semantics, and redaction tests.
+Integrate structured logs, bounded-cardinality metrics, trace propagation, readiness semantics, and redaction tests.
