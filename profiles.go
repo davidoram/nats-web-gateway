@@ -89,6 +89,10 @@ func (h Handler) resolvedRoutes() ([]Route, error) {
 }
 
 func mergeRoute(base, override Route) (Route, error) {
+	// Cached profiles are immutable resolution inputs. Clone every mutable shape
+	// before clearing, merging, or extending so one descendant can never alter
+	// an ancestor or sibling through shared pointers, maps, or slices.
+	base = cloneRoute(base)
 	cleared := make(map[string]struct{}, len(override.Clear))
 	for _, field := range override.Clear {
 		if !slices.Contains(shareableRouteFields, field) {
@@ -309,6 +313,9 @@ func extendRoute(route *Route, ext RouteExtensions) error {
 	return nil
 }
 func cloneParameters(in map[string]Parameter) map[string]Parameter {
+	if in == nil {
+		return nil
+	}
 	out := make(map[string]Parameter, len(in))
 	for k, v := range in {
 		out[k] = v
@@ -324,6 +331,38 @@ func cloneResponse(in Response) Response {
 			m[k] = v
 		}
 		in.ServiceErrorStatuses = m
+	}
+	return in
+}
+
+func cloneRoute(in Route) Route {
+	in.Methods = slices.Clone(in.Methods)
+	in.Clear = slices.Clone(in.Clear)
+	in.Parameters = cloneParameters(in.Parameters)
+	in.RequestHeaders = slices.Clone(in.RequestHeaders)
+	in.Response = cloneResponse(in.Response)
+	if in.CoreSSE != nil {
+		value := *in.CoreSSE
+		in.CoreSSE = &value
+	}
+	if in.SecurityContext != nil {
+		value := *in.SecurityContext
+		if value.DownstreamIdentity != nil {
+			identity := *value.DownstreamIdentity
+			value.DownstreamIdentity = &identity
+		}
+		in.SecurityContext = &value
+	}
+	if in.Extend != nil {
+		value := *in.Extend
+		value.Parameters = cloneParameters(value.Parameters)
+		value.RequestHeaders = slices.Clone(value.RequestHeaders)
+		value.ResponseHeaders = slices.Clone(value.ResponseHeaders)
+		value.Representations = slices.Clone(value.Representations)
+		if value.ServiceErrorStatuses != nil {
+			value.ServiceErrorStatuses = cloneResponse(Response{ServiceErrorStatuses: value.ServiceErrorStatuses}).ServiceErrorStatuses
+		}
+		in.Extend = &value
 	}
 	return in
 }

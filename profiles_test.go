@@ -120,6 +120,46 @@ func TestRouteProfileRejectsDuplicateClear(t *testing.T) {
 	}
 }
 
+func TestRouteProfileDescendantCannotMutateAncestorOrSibling(t *testing.T) {
+	base := validRoute("", "", "orders.{id}", "GET")
+	base.Name, base.Path, base.Methods = "", "", nil
+	base.CoreSSE = &CoreSSE{BufferMessages: 8, BufferBytes: 8192, HeartbeatInterval: caddy.Duration(time.Second), MaxDuration: caddy.Duration(time.Minute), MaxConnections: 5}
+	base.SecurityContext = &SecurityContext{Mechanism: credentials.MechanismBearerToken, MaxConnections: 4, IdleTimeout: caddy.Duration(time.Minute), MaxLifetime: caddy.Duration(time.Hour)}
+	base.Response.ServiceErrorStatuses = map[string]int{"4001": 400}
+	childOverride := Route{
+		CoreSSE:         &CoreSSE{MaxConnections: 99},
+		SecurityContext: &SecurityContext{MaxConnections: 77},
+		Extend: &RouteExtensions{
+			Parameters:           map[string]Parameter{"tenant": {Source: "query", Name: "tenant", Pattern: `^[a-z]+$`}},
+			ServiceErrorStatuses: map[string]int{"4002": 422},
+		},
+	}
+	h := validHandler(
+		Route{Name: "base_route", Path: "/base/{id}", Methods: []string{"GET"}, Profile: "base"},
+		Route{Name: "changed_route", Path: "/changed/{id}", Methods: []string{"GET"}, Profile: "changed"},
+		Route{Name: "sibling_route", Path: "/sibling/{id}", Methods: []string{"GET"}, Profile: "sibling"},
+	)
+	h.RouteProfiles = []RouteProfile{
+		{Name: "base", Route: base},
+		{Name: "changed", Extends: "base", Route: childOverride},
+		{Name: "sibling", Extends: "base"},
+	}
+	for range 50 {
+		routes, err := h.resolvedRoutes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, index := range []int{0, 2} {
+			if routes[index].CoreSSE.MaxConnections != 5 || routes[index].SecurityContext.MaxConnections != 4 || len(routes[index].Parameters) != 1 || len(routes[index].Response.ServiceErrorStatuses) != 1 {
+				t.Fatalf("ancestor/sibling policy mutated on iteration for route %d: %#v", index, routes[index])
+			}
+		}
+		if routes[1].CoreSSE.MaxConnections != 99 || routes[1].SecurityContext.MaxConnections != 77 || len(routes[1].Parameters) != 2 || routes[1].Response.ServiceErrorStatuses["4002"] != 422 {
+			t.Fatalf("child overrides missing: %#v", routes[1])
+		}
+	}
+}
+
 func TestRouteProfileClearRequiredFieldFailsEffectiveValidation(t *testing.T) {
 	base := validRoute("", "", "orders", "GET")
 	base.Name, base.Path, base.Methods = "", "", nil
