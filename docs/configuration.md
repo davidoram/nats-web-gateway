@@ -22,7 +22,9 @@ must be set inline or inherited from a profile.
 {
   "handler": "nats_web_gateway",
   "nats": {
-    "urls": ["nats://127.0.0.1:4222"],
+    "urls": [
+      "nats://127.0.0.1:4222"
+    ],
     "username": "gateway",
     "password": "{env.NATS_GATEWAY_PASSWORD}",
     "connect_timeout": "5s",
@@ -30,33 +32,55 @@ must be set inline or inherited from a profile.
     "max_reconnects": -1,
     "drain_timeout": "30s"
   },
-  "route_profiles": [{
-    "name": "json_api",
-    "request_headers": ["Content-Type"],
-    "timeout": "2s",
-    "max_request_body_bytes": 1048576,
-    "max_reply_bytes": 1048576,
-    "response": {
-      "mode": "json",
-      "headers": ["ETag"],
-      "content_type": "application/json",
-      "representations": ["application/vnd.example.order+json"],
-      "negotiate_accept": true,
-      "service_error_statuses": {"4001": 400}
-    },
-    "stream_mode": "request_reply"
-  }],
-  "routes": [{
-    "name": "get_order",
-    "path": "/orders/{id}",
-    "methods": ["GET"],
-    "profile": "json_api",
-    "subject": "orders.{id}",
-    "parameters": {
-      "id": {"source": "path", "name": "id", "pattern": "^[A-Za-z0-9_-]+$"}
-    },
-    "extend": {"request_headers": ["Traceparent"]}
-  }]
+  "route_profiles": [
+    {
+      "name": "json_api",
+      "request_headers": [
+        "Content-Type"
+      ],
+      "timeout": "2s",
+      "max_request_body_bytes": 1048576,
+      "max_reply_bytes": 1048576,
+      "response": {
+        "mode": "json",
+        "headers": [
+          "ETag"
+        ],
+        "content_type": "application/json",
+        "representations": [
+          "application/vnd.example.order+json"
+        ],
+        "negotiate_accept": true,
+        "service_error_statuses": {
+          "4001": 400
+        }
+      },
+      "stream_mode": "request_reply"
+    }
+  ],
+  "routes": [
+    {
+      "name": "get_order",
+      "path": "/orders/{id}",
+      "methods": [
+        "GET"
+      ],
+      "profile": "json_api",
+      "subject": "orders.{id}",
+      "parameters": {
+        "id": {
+          "source": "path",
+          "name": "id",
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      },
+      "extend": {
+        "request_headers": [
+          "Traceparent"
+        ]
+      }
+    }
+  ]
 }
 ```
 
@@ -245,8 +269,12 @@ forwarding `Content-Type`.
 {
   "profile": "json_api",
   "extend": {
-    "request_headers": ["Traceparent"],
-    "service_error_statuses": {"4041": 404}
+    "request_headers": [
+      "Traceparent"
+    ],
+    "service_error_statuses": {
+      "4041": 404
+    }
   }
 }
 ```
@@ -267,7 +295,14 @@ and must have a unique name.
 **Example:**
 
 ```json
-{"route_profiles":[{"name":"bounded","timeout":"2s"}]}
+{
+  "route_profiles": [
+    {
+      "name": "bounded",
+      "timeout": "2s"
+    }
+  ]
+}
 ```
 
 ### Profile `name`
@@ -533,7 +568,17 @@ The nested connection policy must validate even when every route is protected.
 **Example:**
 
 ```json
-{"nats":{"urls":["nats://127.0.0.1:4222"],"connect_timeout":"5s","reconnect_wait":"1s","max_reconnects":-1,"drain_timeout":"30s"}}
+{
+  "nats": {
+    "urls": [
+      "nats://127.0.0.1:4222"
+    ],
+    "connect_timeout": "5s",
+    "reconnect_wait": "1s",
+    "max_reconnects": -1,
+    "drain_timeout": "30s"
+  }
+}
 ```
 
 ### `nats.urls` / `nats_urls`
@@ -662,7 +707,26 @@ Every entry must resolve to complete valid policy.
 **Example:**
 
 ```json
-{"routes":[{"name":"health","path":"/health","methods":["GET"],"subject":"health","timeout":"1s","max_request_body_bytes":1,"max_reply_bytes":1024,"response":{"mode":"json","content_type":"application/json"},"stream_mode":"request_reply"}]}
+{
+  "routes": [
+    {
+      "name": "health",
+      "path": "/health",
+      "methods": [
+        "GET"
+      ],
+      "subject": "health",
+      "timeout": "1s",
+      "max_request_body_bytes": 1,
+      "max_reply_bytes": 1024,
+      "response": {
+        "mode": "json",
+        "content_type": "application/json"
+      },
+      "stream_mode": "request_reply"
+    }
+  ]
+}
 ```
 
 ### Route `name`
@@ -740,7 +804,15 @@ unused entries fail.
 **Example:**
 
 ```json
-{"parameters":{"id":{"source":"path","name":"id","pattern":"^[A-Za-z0-9_-]+$"}}}
+{
+  "parameters": {
+    "id": {
+      "source": "path",
+      "name": "id",
+      "pattern": "^[A-Za-z0-9_-]+$"
+    }
+  }
+}
 ```
 
 ### Parameter `source`
@@ -1018,7 +1090,15 @@ events, and it does not support `Last-Event-ID`.
 **Example:**
 
 ```json
-{"core_sse":{"buffer_messages":32,"buffer_bytes":1048576,"heartbeat_interval":"15s","max_duration":"15m","max_connections":100}}
+{
+  "core_sse": {
+    "buffer_messages": 32,
+    "buffer_bytes": 1048576,
+    "heartbeat_interval": "15s",
+    "max_duration": "15m",
+    "max_connections": 100
+  }
+}
 ```
 
 ### `core_sse.buffer_messages` / `core_sse_buffer_messages`
@@ -1135,7 +1215,14 @@ and pool/connectivity failure `503`.
 **Example:**
 
 ```json
-{"security_context":{"mechanism":"bearer_token","max_connections":100,"idle_timeout":"1m","max_lifetime":"15m"}}
+{
+  "security_context": {
+    "mechanism": "bearer_token",
+    "max_connections": 100,
+    "idle_timeout": "1m",
+    "max_lifetime": "15m"
+  }
+}
 ```
 
 ### `security_context.mechanism` / `credential_mechanism`
@@ -1255,7 +1342,13 @@ present. It is not available on streams, and its header cannot also appear in
 **Example:**
 
 ```json
-{"downstream_identity":{"source":"nats_user_id","header":"X-Authenticated-User","max_value_bytes":256}}
+{
+  "downstream_identity": {
+    "source": "nats_user_id",
+    "header": "X-Authenticated-User",
+    "max_value_bytes": 256
+  }
+}
 ```
 
 ### `downstream_identity.source` / `downstream_identity_source`
