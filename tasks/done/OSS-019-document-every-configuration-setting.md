@@ -26,3 +26,7 @@ Review all examples and cross-references in `docs/configuration.md` for accuracy
 ## Dependencies
 
 - OSS-018 — Share configuration across routes.
+
+## Completion evidence
+
+- [PR #16](https://github.com/davidoram/nats-web-gateway/pull/16)
