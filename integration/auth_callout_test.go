@@ -22,10 +22,12 @@ const (
 	fixtureClientSecret = "local-client-secret"
 )
 
+var authIntegrationHTTPClient = &http.Client{Timeout: 2 * time.Second}
+
 func TestHydraAuthCallout(t *testing.T) {
 	waitHTTP(t, hydraAdminURL+"/health/ready", 30*time.Second)
-	waitHTTP(t, authCaddyURL+"/protected", 30*time.Second)
 	token := requestToken(t, fixtureClientID, fixtureClientSecret, "gateway:invoke", "nats-gateway")
+	waitProtected(t, token, 30*time.Second)
 
 	t.Run("real opaque token succeeds without forwarding Authorization", func(t *testing.T) {
 		status, body := protected(t, "Bearer "+token)
@@ -133,27 +135,35 @@ func requestToken(t *testing.T, clientID, clientSecret, scope, audience string) 
 
 func protected(t *testing.T, authorization string) (int, string) {
 	t.Helper()
+	status, body, err := protectedResponse(authorization)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return status, body
+}
+
+func protectedResponse(authorization string) (int, string, error) {
 	req, _ := http.NewRequest(http.MethodPost, authCaddyURL+"/protected", strings.NewReader("hello"))
 	if authorization != "" {
 		req.Header.Set("Authorization", authorization)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := authIntegrationHTTPClient.Do(req)
 	if err != nil {
-		t.Fatal(err)
+		return 0, "", err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2048))
 	if err != nil {
-		t.Fatal(err)
+		return 0, "", err
 	}
-	return resp.StatusCode, string(body)
+	return resp.StatusCode, string(body), nil
 }
 
 func waitHTTP(t *testing.T, target string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(target)
+		resp, err := authIntegrationHTTPClient.Get(target)
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode < 500 {
@@ -163,4 +173,17 @@ func waitHTTP(t *testing.T, target string, timeout time.Duration) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", target)
+}
+
+func waitProtected(t *testing.T, token string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		status, body, err := protectedResponse("Bearer " + token)
+		if err == nil && status == http.StatusOK && body == "hydra authorized" {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for the authenticated gateway path")
 }
