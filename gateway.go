@@ -3,6 +3,7 @@ package natswebgateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -34,8 +35,9 @@ func init() {
 // Routes are validated before Caddy begins serving. HTTP-to-NATS execution is
 // introduced by later tasks.
 type Handler struct {
-	NATS   NATSConnection `json:"nats"`
-	Routes []Route        `json:"routes"`
+	NATS          NATSConnection `json:"nats"`
+	RouteProfiles []RouteProfile `json:"route_profiles,omitempty"`
+	Routes        []Route        `json:"routes"`
 
 	lifecycle      *connectionLifecycle
 	compiledRoutes []compiledRoute
@@ -183,7 +185,11 @@ func (h Handler) Validate() error {
 	if err := h.NATS.validate(); err != nil {
 		return err
 	}
-	return validateRoutes(h.Routes)
+	routes, err := h.resolvedRoutes()
+	if err != nil {
+		return err
+	}
+	return validateRoutes(routes)
 }
 
 // Provision compiles routes and establishes this handler instance's operator
@@ -206,8 +212,14 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		permissions: newPermissionTracker(),
 	}
 	hasOperatorRoute := false
-	h.compiledRoutes = make([]compiledRoute, 0, len(h.Routes))
-	for _, configured := range h.Routes {
+	resolvedRoutes, err := h.resolvedRoutes()
+	if err != nil {
+		return err
+	}
+	h.compiledRoutes = make([]compiledRoute, 0, len(resolvedRoutes))
+	securityPools := make(map[string]*securityContextPool)
+	streamQuotas := make(map[string]chan struct{})
+	for _, configured := range resolvedRoutes {
 		parameters := make(map[string]internalroutes.Parameter, len(configured.Parameters))
 		for name, parameter := range configured.Parameters {
 			parameters[name] = internalroutes.Parameter{Source: parameter.Source, Name: parameter.Name, Pattern: parameter.Pattern}
@@ -218,7 +230,13 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		}
 		candidate := compiledRoute{config: configured, route: compiled}
 		if configured.CoreSSE != nil {
-			candidate.streams = make(chan struct{}, configured.CoreSSE.MaxConnections)
+			keyBytes, _ := json.Marshal(configured.CoreSSE)
+			key := string(keyBytes)
+			candidate.streams = streamQuotas[key]
+			if candidate.streams == nil {
+				candidate.streams = make(chan struct{}, configured.CoreSSE.MaxConnections)
+				streamQuotas[key] = candidate.streams
+			}
 		}
 		if configured.SecurityContext != nil {
 			base := []nats.Option{
@@ -228,7 +246,13 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 				nats.MaxReconnects(h.NATS.MaxReconnects),
 				nats.DrainTimeout(time.Duration(h.NATS.DrainTimeout)),
 			}
-			candidate.pool = newSecurityContextPool(*configured.SecurityContext, strings.Join(h.NATS.URLs, ","), connector, base)
+			keyBytes, _ := json.Marshal(configured.SecurityContext)
+			key := string(keyBytes)
+			candidate.pool = securityPools[key]
+			if candidate.pool == nil {
+				candidate.pool = newSecurityContextPool(*configured.SecurityContext, strings.Join(h.NATS.URLs, ","), connector, base)
+				securityPools[key] = candidate.pool
+			}
 		} else {
 			hasOperatorRoute = true
 		}
